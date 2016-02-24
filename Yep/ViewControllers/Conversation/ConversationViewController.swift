@@ -258,6 +258,24 @@ enum ConversationFeed {
 
         return nil
     }
+
+    var openGraphInfo: OpenGraphInfoType? {
+
+        switch self {
+        case .DiscoveredFeedType(let discoveredFeed):
+            if let attachment = discoveredFeed.attachment {
+                if case let .URL(openGraphInfo) = attachment {
+                    return openGraphInfo
+                }
+            }
+        case .FeedType(let feed):
+            if let openGraphInfo = feed.openGraphInfo {
+                return openGraphInfo
+            }
+        }
+
+        return nil
+    }
     
     var attachments: [Attachment] {
         switch self {
@@ -296,6 +314,7 @@ class ConversationViewController: BaseViewController {
     var afterDeletedFeedAction: ((feedID: String) -> Void)?
     var conversationDirtyAction: (() -> Void)?
     var conversationIsDirty = false
+    var syncPlayFeedAudioAction: (() -> Void)?
 
     private var needDetectMention = false {
         didSet {
@@ -375,7 +394,11 @@ class ConversationViewController: BaseViewController {
         }
     }
 
-    private lazy var moreView: ConversationMoreView = ConversationMoreView()
+    private lazy var moreView: ConversationMoreView = {
+        let view = ConversationMoreView()
+        view.isMyFeed = self.conversation.withGroup?.withFeed?.creator?.isMe ?? false
+        return view
+    }()
 
     private lazy var moreMessageTypesView: MoreMessageTypesView = {
 
@@ -392,11 +415,15 @@ class ConversationViewController: BaseViewController {
         view.takePhotoAction = { [weak self] in
 
             let openCamera: ProposerAction = { [weak self] in
-                if UIImagePickerController.isSourceTypeAvailable(UIImagePickerControllerSourceType.Camera) {
-                    if let strongSelf = self {
-                        strongSelf.imagePicker.sourceType = .Camera
-                        strongSelf.presentViewController(strongSelf.imagePicker, animated: true, completion: nil)
-                    }
+
+                guard UIImagePickerController.isSourceTypeAvailable(.Camera) else {
+                    self?.alertCanNotOpenCamera()
+                    return
+                }
+
+                if let strongSelf = self {
+                    strongSelf.imagePicker.sourceType = .Camera
+                    strongSelf.presentViewController(strongSelf.imagePicker, animated: true, completion: nil)
                 }
             }
 
@@ -408,11 +435,15 @@ class ConversationViewController: BaseViewController {
         view.choosePhotoAction = { [weak self] in
 
             let openCameraRoll: ProposerAction = { [weak self] in
-                if UIImagePickerController.isSourceTypeAvailable(UIImagePickerControllerSourceType.PhotoLibrary){
-                    if let strongSelf = self {
-                        strongSelf.imagePicker.sourceType = .PhotoLibrary
-                        strongSelf.presentViewController(strongSelf.imagePicker, animated: true, completion: nil)
-                    }
+
+                guard UIImagePickerController.isSourceTypeAvailable(.PhotoLibrary) else {
+                    self?.alertCanNotAccessCameraRoll()
+                    return
+                }
+
+                if let strongSelf = self {
+                    strongSelf.imagePicker.sourceType = .PhotoLibrary
+                    strongSelf.presentViewController(strongSelf.imagePicker, animated: true, completion: nil)
                 }
             }
 
@@ -584,9 +615,10 @@ class ConversationViewController: BaseViewController {
     #endif
 
     private let chatSectionDateCellIdentifier = "ChatSectionDateCell"
-    private let chatStateCellIdentifier = "ChatStateCell"
     private let chatLeftTextCellIdentifier = "ChatLeftTextCell"
     private let chatRightTextCellIdentifier = "ChatRightTextCell"
+    private let chatLeftTextURLCellIdentifier = "ChatLeftTextURLCell"
+    private let chatRightTextURLCellIdentifier = "ChatRightTextURLCell"
     private let chatLeftImageCellIdentifier = "ChatLeftImageCell"
     private let chatRightImageCellIdentifier = "ChatRightImageCell"
     private let chatLeftAudioCellIdentifier = "ChatLeftAudioCell"
@@ -595,6 +627,7 @@ class ConversationViewController: BaseViewController {
     private let chatRightVideoCellIdentifier = "ChatRightVideoCell"
     private let chatLeftLocationCellIdentifier =  "ChatLeftLocationCell"
     private let chatRightLocationCellIdentifier =  "ChatRightLocationCell"
+    private let chatLeftRecallCellIdentifier =  "ChatLeftRecallCell"
     private let chatLeftSocialWorkCellIdentifier = "ChatLeftSocialWorkCell"
     
     private struct Listener {
@@ -671,28 +704,36 @@ class ConversationViewController: BaseViewController {
 
         conversationCollectionView.alwaysBounceVertical = true
 
-        conversationCollectionView.registerNib(UINib(nibName: chatStateCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatStateCellIdentifier)
         conversationCollectionView.registerNib(UINib(nibName: chatSectionDateCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatSectionDateCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatLeftTextCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftTextCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatRightTextCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatRightTextCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatLeftImageCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftImageCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatRightImageCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatRightImageCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatLeftAudioCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftAudioCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatRightAudioCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatRightAudioCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatLeftVideoCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftVideoCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatRightVideoCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatRightVideoCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatLeftLocationCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftLocationCellIdentifier)
-        conversationCollectionView.registerNib(UINib(nibName: chatRightLocationCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatRightLocationCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftTextCell.self, forCellWithReuseIdentifier: chatLeftTextCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightTextCell.self, forCellWithReuseIdentifier: chatRightTextCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftTextURLCell.self, forCellWithReuseIdentifier: chatLeftTextURLCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightTextURLCell.self, forCellWithReuseIdentifier: chatRightTextURLCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftImageCell.self, forCellWithReuseIdentifier: chatLeftImageCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightImageCell.self, forCellWithReuseIdentifier: chatRightImageCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftAudioCell.self, forCellWithReuseIdentifier: chatLeftAudioCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightAudioCell.self, forCellWithReuseIdentifier: chatRightAudioCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftVideoCell.self, forCellWithReuseIdentifier: chatLeftVideoCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightVideoCell.self, forCellWithReuseIdentifier: chatRightVideoCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftLocationCell.self, forCellWithReuseIdentifier: chatLeftLocationCellIdentifier)
+        conversationCollectionView.registerClass(ChatRightLocationCell.self, forCellWithReuseIdentifier: chatRightLocationCellIdentifier)
+
+        conversationCollectionView.registerClass(ChatLeftRecallCell.self, forCellWithReuseIdentifier: chatLeftRecallCellIdentifier)
+
         conversationCollectionView.registerNib(UINib(nibName: chatLeftSocialWorkCellIdentifier, bundle: nil), forCellWithReuseIdentifier: chatLeftSocialWorkCellIdentifier)
         
         conversationCollectionView.bounces = true
-
 
         let tap = UITapGestureRecognizer(target: self, action: "tapToCollapseMessageToolBar:")
         conversationCollectionView.addGestureRecognizer(tap)
 
         messageToolbarBottomConstraint.constant = 0
-        //moreMessageTypesViewHeightConstraint.constant = moreMessageTypesViewDefaultHeight
 
         keyboardMan.animateWhenKeyboardAppear = { [weak self] appearPostIndex, keyboardHeight, keyboardHeightIncrement in
 
@@ -708,7 +749,7 @@ class ConversationViewController: BaseViewController {
                 }
             }
 
-            println("appear \(keyboardHeight), \(keyboardHeightIncrement)\n")
+            //println("appear \(keyboardHeight), \(keyboardHeightIncrement)\n")
 
             if let strongSelf = self {
 
@@ -751,7 +792,7 @@ class ConversationViewController: BaseViewController {
                 }
             }
 
-            println("disappear \(keyboardHeight)\n")
+            //println("disappear \(keyboardHeight)\n")
 
             if let strongSelf = self {
                 
@@ -787,7 +828,7 @@ class ConversationViewController: BaseViewController {
                     dispatch_async(realmQueue) { [weak self] in
                         
                         messagesFromRecipient(recipient, withTimeDirection: timeDirection, failureHandler: { reason, errorMessage in
-                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                             failedAction?()
 
@@ -834,82 +875,17 @@ class ConversationViewController: BaseViewController {
             break
         }
 
-        if let group = conversation.withGroup where !group.includeMe {
-
-            let groupID = group.groupID
-
-            meIsMemberOfGroup(groupID: groupID, failureHandler: nil, completion: { meIsMember in
-
-                println("meIsMember: \(meIsMember)")
-
-                guard !meIsMember else {
-                    return
-                }
-
-                delay(1) { [weak self] in
-
-                    self?.subscribeView.subscribeAction = { [weak self] in
-                        joinGroup(groupID: groupID, failureHandler: nil, completion: {
-                            println("subscribe OK")
-
-                            dispatch_async(dispatch_get_main_queue()) { [weak self] in
-                                if let strongSelf = self {
-                                    let _ = try? strongSelf.realm.write {
-                                        strongSelf.conversation.withGroup?.includeMe = true
-                                    }
-                                }
-                            }
-                        })
-                    }
-
-                    self?.subscribeView.showWithChangeAction = { [weak self] in
-                        if let strongSelf = self {
-
-                            let bottom = strongSelf.view.bounds.height - strongSelf.messageToolbar.frame.origin.y + SubscribeView.height
-
-                            let newContentOffsetY = strongSelf.conversationCollectionView.contentSize.height - strongSelf.messageToolbar.frame.origin.y + SubscribeView.height
-
-                            self?.tryUpdateConversationCollectionViewWith(newContentInsetBottom: bottom, newContentOffsetY: newContentOffsetY)
-
-                            self?.isSubscribeViewShowing = true
-                        }
-                    }
-
-                    self?.subscribeView.hideWithChangeAction = { [weak self] in
-                        if let strongSelf = self {
-
-                            let bottom = strongSelf.view.bounds.height - strongSelf.messageToolbar.frame.origin.y
-
-                            let newContentOffsetY = strongSelf.conversationCollectionView.contentSize.height - strongSelf.messageToolbar.frame.origin.y
-                            
-                            self?.tryUpdateConversationCollectionViewWith(newContentInsetBottom: bottom, newContentOffsetY: newContentOffsetY)
-                            
-                            self?.isSubscribeViewShowing = false
-                        }
-                    }
-                    
-                    self?.subscribeView.show()
-                }
-            })
-        }
-
-        #if DEBUG
-//            view.addSubview(conversationFPSLabel)
-        #endif
+        tryShowSubscribeView()
 
         needDetectMention = conversation.needDetectMention
+
+        #if DEBUG
+            //view.addSubview(conversationFPSLabel)
+        #endif
     }
-    
+
     override func viewWillAppear(animated: Bool) {
         super.viewWillAppear(animated)
-
-        /*
-        // 尝试恢复原始的 NavigationControllerDelegate，如果自定义 push 了才需要
-        if let delegate = originalNavigationControllerDelegate {
-            navigationController?.delegate = delegate
-            navigationControllerDelegate = nil
-        }
-        */
 
         if isFirstAppear {
 
@@ -947,6 +923,7 @@ class ConversationViewController: BaseViewController {
 
             messageToolbar.stateTransitionAction = { [weak self] (messageToolbar, previousState, currentState) in
 
+                //println("messageToolbar.messageTextView.text 1: \(messageToolbar.messageTextView.text)")
                 switch currentState {
 
                 case .BeginTextInput:
@@ -961,12 +938,41 @@ class ConversationViewController: BaseViewController {
                     if self?.needDetectMention ?? false {
                         self?.mentionView.hide()
                     }
+
+                    if previousState != .TextInputing {
+                        if let
+                            draft = self?.conversation.draft,
+                            state = MessageToolbarState(rawValue: draft.messageToolbarState) {
+                                messageToolbar.messageTextView.text = draft.text
+                        }
+                    }
+                }
+
+                if previousState != currentState {
+                    //println("messageToolbar.messageTextView.text 2: \(messageToolbar.messageTextView.text)")
+                    NSNotificationCenter.defaultCenter().postNotificationName(MessageToolbar.Notification.updateDraft, object: nil)
                 }
             }
 
             // MARK: Mention
 
             if needDetectMention {
+
+                messageToolbar.initMentionUserAction = { [weak self] in
+
+                    let users = self?.conversation.mentionInitUsers ?? []
+
+                    self?.mentionView.users = users
+
+                    guard !users.isEmpty else {
+                        self?.mentionView.hide()
+                        return
+                    }
+
+                    self?.view.layoutIfNeeded()
+                    self?.mentionView.show()
+                }
+
                 messageToolbar.tryMentionUserAction = { [weak self] usernamePrefix in
                     usersMatchWithUsernamePrefix(usernamePrefix, failureHandler: nil) { users in
                         dispatch_async(dispatch_get_main_queue()) { [weak self] in
@@ -1085,7 +1091,7 @@ class ConversationViewController: BaseViewController {
                         }
 
                     }, failureHandler: { [weak self] reason, errorMessage in
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
+                        defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                         YepAlert.alertSorry(message: NSLocalizedString("Failed to send text!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -1113,7 +1119,7 @@ class ConversationViewController: BaseViewController {
                         }
 
                     }, failureHandler: { [weak self] reason, errorMessage in
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
+                        defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                         dispatch_async(dispatch_get_main_queue()) {
                             YepAlert.alertSorry(message: NSLocalizedString("Failed to send text!\nTry tap on message to resend.", comment: ""), inViewController: self)
@@ -1188,7 +1194,7 @@ class ConversationViewController: BaseViewController {
                             }
 
                         }, failureHandler: { [weak self] reason, errorMessage in
-                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                             YepAlert.alertSorry(message: NSLocalizedString("Failed to send audio!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -1215,7 +1221,7 @@ class ConversationViewController: BaseViewController {
                             }
 
                         }, failureHandler: { [weak self] reason, errorMessage in
-                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                             YepAlert.alertSorry(message: NSLocalizedString("Failed to send audio!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -1419,6 +1425,7 @@ class ConversationViewController: BaseViewController {
         if let checkTypingStatusTimer = checkTypingStatusTimer {
             checkTypingStatusTimer.invalidate()
         }
+
         NSNotificationCenter.defaultCenter().postNotificationName(MessageToolbar.Notification.updateDraft, object: nil)
     }
 
@@ -1431,10 +1438,10 @@ class ConversationViewController: BaseViewController {
 
         waverView.removeFromSuperview()
 
-        // stop audio playing
+        // stop audio playing if need
         
         if let audioPlayer = YepAudioService.sharedManager.audioPlayer {
-            if audioPlayer.playing {
+            if audioPlayer.playing, let delegate = audioPlayer.delegate as? ConversationViewController where delegate == self {
                 audioPlayer.stop()
 
                 UIDevice.currentDevice().proximityMonitoringEnabled = false
@@ -1471,7 +1478,7 @@ class ConversationViewController: BaseViewController {
             let userNickname = user.nickname
 
             stateOfFriendRequestWithUser(user, failureHandler: { reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
             }, completion: { isFriend, receivedFriendRequestState, receivedFriendRequestID, sentFriendRequestState in
 
@@ -1656,6 +1663,10 @@ class ConversationViewController: BaseViewController {
 
         feedView.feed = feed
 
+        feedView.syncPlayAudioAction = { [weak self] in
+            self?.syncPlayFeedAudioAction?()
+        }
+
         feedView.tapAvatarAction = { [weak self] in
             self?.performSegueWithIdentifier("showProfileFromFeedView", sender: nil)
         }
@@ -1708,15 +1719,6 @@ class ConversationViewController: BaseViewController {
             mediaPreviewWindow.rootViewController = vc
             mediaPreviewWindow.windowLevel = UIWindowLevelAlert - 1
             mediaPreviewWindow.makeKeyAndVisible()
-
-            /*
-            let info = [
-                "transitionView": transitionView,
-                "attachments": Box(value: attachments),
-                "index": index,
-            ]
-            self?.performSegueWithIdentifier("showFeedMedia", sender: info)
-            */
         }
 
         feedView.tapGithubRepoAction = { [weak self] URL in
@@ -1735,6 +1737,11 @@ class ConversationViewController: BaseViewController {
             mapItem.openInMapsWithLaunchOptions(nil)
         }
 
+        feedView.tapURLInfoAction = { [weak self] URL in
+            println("tapURLInfoAction URL: \(URL)")
+            self?.yep_openURL(URL)
+        }
+
         feedView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(feedView)
@@ -1749,7 +1756,6 @@ class ConversationViewController: BaseViewController {
         let height = NSLayoutConstraint(item: feedView, attribute: .Height, relatedBy: .Equal, toItem: nil, attribute: .NotAnAttribute, multiplier: 1.0, constant: feedView.normalHeight)
 
         NSLayoutConstraint.activateConstraints(constraintsH)
-        //NSLayoutConstraint.activateConstraints(constraintsV)
         NSLayoutConstraint.activateConstraints([top, height])
 
         feedView.heightConstraint = height
@@ -1761,7 +1767,6 @@ class ConversationViewController: BaseViewController {
 
         guard newContentOffsetY + conversationCollectionView.contentInset.top > 0 else {
             conversationCollectionView.contentInset.bottom = bottom
-
             return
         }
 
@@ -1874,12 +1879,21 @@ class ConversationViewController: BaseViewController {
 
         case MessageMediaType.Text.rawValue:
 
-            let rect = message.textContentToShow.boundingRectWithSize(CGSize(width: messageTextLabelMaxWidth, height: CGFloat(FLT_MAX)), options: [.UsesLineFragmentOrigin, .UsesFontLeading], attributes: YepConfig.ChatCell.textAttributes, context: nil)
+            if message.deletedByCreator {
+                height = 26
 
-            height = max(ceil(rect.height) + (11 * 2), YepConfig.chatCellAvatarSize())
+            } else {
+                let rect = message.textContent.boundingRectWithSize(CGSize(width: messageTextLabelMaxWidth, height: CGFloat(FLT_MAX)), options: [.UsesLineFragmentOrigin, .UsesFontLeading], attributes: YepConfig.ChatCell.textAttributes, context: nil)
 
-            if !key.isEmpty {
-                textContentLabelWidths[key] = ceil(rect.width)
+                height = max(ceil(rect.height) + (11 * 2), YepConfig.chatCellAvatarSize())
+
+                if message.openGraphInfo != nil {
+                    height += 100 + 10
+                }
+
+                if !key.isEmpty {
+                    textContentLabelWidths[key] = ceil(rect.width)
+                }
             }
 
         case MessageMediaType.Image.rawValue:
@@ -1930,11 +1944,13 @@ class ConversationViewController: BaseViewController {
             height = 20
         }
 
-        if message.mediaType != MessageMediaType.SectionDate.rawValue && conversation.withGroup != nil {
-            
-            if let sender = message.fromFriend {
-                if sender.friendState != UserFriendState.Me.rawValue {
-                    height += YepConfig.ChatCell.marginTopForGroup
+        // inGroup, plus height for show name
+        if conversation.withGroup != nil {
+            if message.mediaType != MessageMediaType.SectionDate.rawValue && !message.deletedByCreator {
+                if let sender = message.fromFriend {
+                    if sender.friendState != UserFriendState.Me.rawValue {
+                        height += YepConfig.ChatCell.marginTopForGroup
+                    }
                 }
             }
         }
@@ -2116,6 +2132,78 @@ class ConversationViewController: BaseViewController {
         }
     }
 
+    private func tryShowSubscribeView() {
+
+        guard let group = conversation.withGroup where !group.includeMe else {
+            return
+        }
+
+        let groupID = group.groupID
+
+        meIsMemberOfGroup(groupID: groupID, failureHandler: nil, completion: { meIsMember in
+
+            println("meIsMember: \(meIsMember)")
+
+            guard !meIsMember else {
+                return
+            }
+
+            delay(3) { [weak self] in
+
+                self?.subscribeView.subscribeAction = { [weak self] in
+                    joinGroup(groupID: groupID, failureHandler: nil, completion: {
+                        println("subscribe OK")
+
+                        dispatch_async(dispatch_get_main_queue()) { [weak self] in
+                            if let strongSelf = self {
+                                let _ = try? strongSelf.realm.write {
+                                    strongSelf.conversation.withGroup?.includeMe = true
+                                }
+                            }
+                        }
+                    })
+                }
+
+                self?.subscribeView.showWithChangeAction = { [weak self] in
+                    if let strongSelf = self {
+
+                        let bottom = strongSelf.view.bounds.height - strongSelf.messageToolbar.frame.origin.y + SubscribeView.height
+
+                        let extraPart = strongSelf.conversationCollectionView.contentSize.height - (strongSelf.messageToolbar.frame.origin.y - SubscribeView.height)
+
+                        let newContentOffsetY: CGFloat
+                        if extraPart > 0 {
+                            newContentOffsetY = strongSelf.conversationCollectionView.contentOffset.y + SubscribeView.height
+                        } else {
+                            newContentOffsetY = strongSelf.conversationCollectionView.contentOffset.y
+                        }
+
+                        //println("extraPart: \(extraPart), newContentOffsetY: \(newContentOffsetY)")
+
+                        self?.tryUpdateConversationCollectionViewWith(newContentInsetBottom: bottom, newContentOffsetY: newContentOffsetY)
+
+                        self?.isSubscribeViewShowing = true
+                    }
+                }
+
+                self?.subscribeView.hideWithChangeAction = { [weak self] in
+                    if let strongSelf = self {
+
+                        let bottom = strongSelf.view.bounds.height - strongSelf.messageToolbar.frame.origin.y
+
+                        let newContentOffsetY = strongSelf.conversationCollectionView.contentSize.height - strongSelf.messageToolbar.frame.origin.y
+
+                        self?.tryUpdateConversationCollectionViewWith(newContentInsetBottom: bottom, newContentOffsetY: newContentOffsetY)
+                        
+                        self?.isSubscribeViewShowing = false
+                    }
+                }
+                
+                self?.subscribeView.show()
+            }
+        })
+    }
+
     // MARK: Actions
 
     @objc private func messagesMarkAsReadByRecipient(notifictaion: NSNotification) {
@@ -2291,7 +2379,6 @@ class ConversationViewController: BaseViewController {
     
     private func shareFeedWithDescripion(description: String, groupShareURLString: String) {
 
-        
         let info = MonkeyKing.Info(
             title: NSLocalizedString("Join Us", comment: ""),
             description: description,
@@ -2561,7 +2648,6 @@ class ConversationViewController: BaseViewController {
                 messageIDs = filteredMessageIDs
             }
         }
-        
         
         // 在前台时才能做插入
         
@@ -2899,6 +2985,16 @@ class ConversationViewController: BaseViewController {
 
         switch identifier {
 
+        case "showProfileWithUsername":
+
+            let vc = segue.destinationViewController as! ProfileViewController
+
+            let box = sender as! Box<ProfileUser>
+            vc.profileUser = box.value
+
+            vc.fromType = .GroupConversation
+            vc.setBackButtonWithTitle()
+
         case "showProfileFromFeedView":
 
             let vc = segue.destinationViewController as! ProfileViewController
@@ -2973,215 +3069,6 @@ class ConversationViewController: BaseViewController {
                 }
             }
 
-        /*
-        case "showFeedMedia":
-
-            let info = sender as! [String: AnyObject]
-
-            let vc = segue.destinationViewController as! MessageMediaViewController
- 
-            if let box = info["attachments"] as? Box<[DiscoveredAttachment]> {
-                let attachments = box.value
-                vc.previewMedias = attachments.map({ PreviewMedia.AttachmentType(attachment: $0) })
-            }
-
-            if let index = info["index"] as? Int {
-                vc.startIndex = index
-            }
-
-            let transitionView = info["transitionView"] as! UIImageView
-
-            let delegate = ConversationMessagePreviewNavigationControllerDelegate()
-            delegate.isFeedMedia = true
-            delegate.snapshot = UIScreen.mainScreen().snapshotViewAfterScreenUpdates(false)
-
-            var frame = transitionView.convertRect(transitionView.frame, toView: view)
-            delegate.frame = frame
-            if let image = transitionView.image {
-                let width = image.size.width
-                let height = image.size.height
-                if width > height {
-                    let newWidth = frame.width * (width / height)
-                    frame.origin.x -= (newWidth - frame.width) / 2
-                    frame.size.width = newWidth
-                } else {
-                    let newHeight = frame.height * (height / width)
-                    frame.origin.y -= (newHeight - frame.height) / 2
-                    frame.size.height = newHeight
-                }
-                delegate.thumbnailImage = image
-            }
-            delegate.thumbnailFrame = frame
-
-            delegate.transitionView = transitionView
-
-            navigationControllerDelegate = delegate
-
-            // 在自定义 push 之前，记录原始的 NavigationControllerDelegate 以便 pop 后恢复
-            originalNavigationControllerDelegate = navigationController!.delegate
-            
-            navigationController?.delegate = delegate
-
-        case "showMessageMedia":
-
-            let vc = segue.destinationViewController as! MessageMediaViewController
-
-            if let info = sender as? [String: AnyObject], mediaMessages = info["mediaMessages"] as? [Message], index = info["index"] as? Int, message = mediaMessages[safe: index], messageIndex = messages.indexOf(message) {
-
-//                vc.previewMedias = [
-//                    PreviewMedia.MessageType(message: message)
-//                ]
-
-                vc.previewMedias = mediaMessages.map({ PreviewMedia.MessageType(message: $0) })
-
-                vc.startIndex = index
-
-                let indexPath = NSIndexPath(forRow: messageIndex - displayedMessagesRange.location , inSection: 0)
-
-                if let cell = conversationCollectionView.cellForItemAtIndexPath(indexPath) {
-
-                    var frame = CGRectZero
-                    var transitionView: UIView?
-
-                    if let sender = message.fromFriend {
-                        if sender.friendState != UserFriendState.Me.rawValue {
-                            switch message.mediaType {
-
-                            case MessageMediaType.Image.rawValue:
-                                let cell = cell as! ChatLeftImageCell
-                                transitionView = cell.messageImageView
-                                frame = cell.convertRect(cell.messageImageView.frame, toView: view)
-
-                            case MessageMediaType.Video.rawValue:
-                                let cell = cell as! ChatLeftVideoCell
-                                transitionView = cell.thumbnailImageView
-                                frame = cell.convertRect(cell.thumbnailImageView.frame, toView: view)
-
-                            case MessageMediaType.Location.rawValue:
-                                let cell = cell as! ChatLeftLocationCell
-                                transitionView = cell.mapImageView
-                                frame = cell.convertRect(cell.mapImageView.frame, toView: view)
-
-                            default:
-                                break
-                            }
-
-                        } else {
-                            switch message.mediaType {
-
-                            case MessageMediaType.Image.rawValue:
-                                let cell = cell as! ChatRightImageCell
-                                transitionView = cell.messageImageView
-                                frame = cell.convertRect(cell.messageImageView.frame, toView: view)
-
-                            case MessageMediaType.Video.rawValue:
-                                let cell = cell as! ChatRightVideoCell
-                                transitionView = cell.thumbnailImageView
-                                frame = cell.convertRect(cell.thumbnailImageView.frame, toView: view)
-
-                            case MessageMediaType.Location.rawValue:
-                                let cell = cell as! ChatRightLocationCell
-                                transitionView = cell.mapImageView
-                                frame = cell.convertRect(cell.mapImageView.frame, toView: view)
-
-                            default:
-                                break
-                            }
-                        }
-                    }
-
-                    let delegate = ConversationMessagePreviewNavigationControllerDelegate()
-                    delegate.snapshot = UIScreen.mainScreen().snapshotViewAfterScreenUpdates(false)
-                    delegate.frame = frame
-                    delegate.thumbnailFrame = frame
-                    delegate.thumbnailImage = message.thumbnailImage
-                    delegate.transitionView = transitionView
-
-                    navigationControllerDelegate = delegate
-
-                    // 在自定义 push 之前，记录原始的 NavigationControllerDelegate 以便 pop 后恢复
-                    originalNavigationControllerDelegate = navigationController!.delegate
-
-                    navigationController?.delegate = delegate
-                }
-            }
-
-        case "presentMessageMedia":
-
-            let vc = segue.destinationViewController as! MessageMediaViewController
-
-            if let message = sender as? Message, messageIndex = messages.indexOf(message) {
-
-                vc.previewMedias = [
-                    PreviewMedia.MessageType(message: message)
-                ]
-
-                let indexPath = NSIndexPath(forRow: messageIndex - displayedMessagesRange.location , inSection: 0)
-
-                if let cell = conversationCollectionView.cellForItemAtIndexPath(indexPath) {
-
-                    var frame = CGRectZero
-                    var transitionView: UIView?
-
-                    if let sender = message.fromFriend {
-                        if sender.friendState != UserFriendState.Me.rawValue {
-                            switch message.mediaType {
-
-                            case MessageMediaType.Image.rawValue:
-                                let cell = cell as! ChatLeftImageCell
-                                transitionView = cell.messageImageView
-                                frame = cell.convertRect(cell.messageImageView.frame, toView: view)
-
-                            case MessageMediaType.Video.rawValue:
-                                let cell = cell as! ChatLeftVideoCell
-                                transitionView = cell.thumbnailImageView
-                                frame = cell.convertRect(cell.thumbnailImageView.frame, toView: view)
-
-                            case MessageMediaType.Location.rawValue:
-                                let cell = cell as! ChatLeftLocationCell
-                                transitionView = cell.mapImageView
-                                frame = cell.convertRect(cell.mapImageView.frame, toView: view)
-
-                            default:
-                                break
-                            }
-
-                        } else {
-                            switch message.mediaType {
-                                
-                            case MessageMediaType.Image.rawValue:
-                                let cell = cell as! ChatRightImageCell
-                                transitionView = cell.messageImageView
-                                frame = cell.convertRect(cell.messageImageView.frame, toView: view)
-
-                            case MessageMediaType.Video.rawValue:
-                                let cell = cell as! ChatRightVideoCell
-                                transitionView = cell.thumbnailImageView
-                                frame = cell.convertRect(cell.thumbnailImageView.frame, toView: view)
-
-                            case MessageMediaType.Location.rawValue:
-                                let cell = cell as! ChatRightLocationCell
-                                transitionView = cell.mapImageView
-                                frame = cell.convertRect(cell.mapImageView.frame, toView: view)
-
-                            default:
-                                break
-                            }
-                        }
-                    }
-
-                    vc.modalPresentationStyle = UIModalPresentationStyle.Custom
-
-                    let transitionManager = ConversationMessagePreviewTransitionManager()
-                    transitionManager.frame = frame
-                    transitionManager.transitionView = transitionView
-
-                    vc.transitioningDelegate = transitionManager
-
-                    messagePreviewTransitionManager = transitionManager
-                }
-            }
-        */
         case "presentPickLocation":
 
             let nvc = segue.destinationViewController as! UINavigationController
@@ -3199,7 +3086,7 @@ class ConversationViewController: BaseViewController {
                         }
 
                     }, failureHandler: { [weak self] reason, errorMessage in
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
+                        defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                         YepAlert.alertSorry(message: NSLocalizedString("Failed to send location!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -3216,7 +3103,7 @@ class ConversationViewController: BaseViewController {
                         }
 
                     }, failureHandler: { [weak self] reason, errorMessage in
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
+                        defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                         YepAlert.alertSorry(message: NSLocalizedString("Failed to send location!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -3276,12 +3163,18 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
         var bubbleFrame = CGRectZero
 
         if let cell = cell as? ChatLeftTextCell {
-            bubbleFrame = cell.convertRect(cell.textContainerView.frame, toView: view)
+            bubbleFrame = cell.convertRect(cell.textContentTextView.frame, toView: view)
 
         } else if let cell = cell as? ChatRightTextCell {
             bubbleFrame = cell.convertRect(cell.textContainerView.frame, toView: view)
 
-        }  else if let cell = cell as? ChatLeftImageCell {
+        } else if let cell = cell as? ChatLeftTextURLCell {
+            bubbleFrame = cell.convertRect(cell.textContentTextView.frame, toView: view)
+
+        } else if let cell = cell as? ChatRightTextURLCell {
+            bubbleFrame = cell.convertRect(cell.textContainerView.frame, toView: view)
+
+        } else if let cell = cell as? ChatLeftImageCell {
             bubbleFrame = cell.convertRect(cell.messageImageView.frame, toView: view)
 
         } else if let cell = cell as? ChatRightImageCell {
@@ -3584,24 +3477,6 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                 mediaPreviewWindow.makeKeyAndVisible()
             }
         }
-
-        /*
-        if message.mediaType == MessageMediaType.Video.rawValue {
-            performSegueWithIdentifier("showMessageMedia", sender: ["mediaMessages": [message], "index": 0])
-
-        } else {
-            let predicate = NSPredicate(format: "mediaType = %d", MessageMediaType.Image.rawValue)
-
-            let mediaMessagesResult = messages.filter(predicate)
-
-            let mediaMessages = mediaMessagesResult.map({ $0 })
-
-            if let index = mediaMessagesResult.indexOf(message) {
-
-                performSegueWithIdentifier("showMessageMedia", sender: ["mediaMessages": mediaMessages, "index": index])
-            }
-        }
-        */
     }
 
     func collectionView(collectionView: UICollectionView, cellForItemAtIndexPath indexPath: NSIndexPath) -> UICollectionViewCell {
@@ -3647,8 +3522,20 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
 
                     default:
 
-                        let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatLeftTextCellIdentifier, forIndexPath: indexPath) as! ChatLeftTextCell
-                        return cell
+                        if message.deletedByCreator {
+                            let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatLeftRecallCellIdentifier, forIndexPath: indexPath) as! ChatLeftRecallCell
+                            return cell
+
+                        } else {
+                            if message.openGraphInfo != nil {
+                                let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatLeftTextURLCellIdentifier, forIndexPath: indexPath) as! ChatLeftTextURLCell
+                                return cell
+
+                            } else {
+                                let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatLeftTextCellIdentifier, forIndexPath: indexPath) as! ChatLeftTextCell
+                                return cell
+                            }
+                        }
                     }
 
                 } else { // from Me
@@ -3677,8 +3564,14 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
 
                     default:
 
-                        let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatRightTextCellIdentifier, forIndexPath: indexPath) as! ChatRightTextCell
-                        return cell
+                        if message.openGraphInfo != nil {
+                            let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatRightTextURLCellIdentifier, forIndexPath: indexPath) as! ChatRightTextURLCell
+                            return cell
+
+                        } else {
+                            let cell = collectionView.dequeueReusableCellWithReuseIdentifier(chatRightTextCellIdentifier, forIndexPath: indexPath) as! ChatRightTextCell
+                            return cell
+                        }
                     }
                 }
             }
@@ -3692,15 +3585,37 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
         return cell
     }
 
+    private func tryShowProfileWithUsername(username: String) {
+
+        if let realm = try? Realm(), user = userWithUsername(username, inRealm: realm) {
+            let profileUser = ProfileUser.UserType(user)
+
+            delay(0.1) { [weak self] in
+                self?.performSegueWithIdentifier("showProfileWithUsername", sender: Box<ProfileUser>(profileUser))
+            }
+
+        } else {
+            discoverUserByUsername(username, failureHandler: { [weak self] reason, errorMessage in
+                YepAlert.alertSorry(message: errorMessage ?? NSLocalizedString("User not found.", comment: ""), inViewController: self)
+
+            }, completion: { discoveredUser in
+                dispatch_async(dispatch_get_main_queue()) { [weak self] in
+                    let profileUser = ProfileUser.DiscoveredUserType(discoveredUser)
+                    self?.performSegueWithIdentifier("showProfileWithUsername", sender: Box<ProfileUser>(profileUser))
+                }
+            })
+        }
+    }
+
     func collectionView(collectionView: UICollectionView, willDisplayCell cell: UICollectionViewCell, forItemAtIndexPath indexPath: NSIndexPath) {
 
         if let message = messages[safe: (displayedMessagesRange.location + indexPath.item)] {
-            
+
             if message.mediaType == MessageMediaType.SectionDate.rawValue {
-                
+
                 if let cell = cell as? ChatSectionDateCell {
                     let createdAt = NSDate(timeIntervalSince1970: message.createdUnixTime)
-                    
+
                     if createdAt.isInCurrentWeek() {
                         cell.sectionDateLabel.text = sectionDateInCurrentWeekFormatter.stringFromDate(createdAt)
 
@@ -3832,10 +3747,43 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                         }
 
                     default:
-                        
-                        if let cell = cell as? ChatLeftTextCell {
+
+                        if message.deletedByCreator {
+                            if let cell = cell as? ChatLeftRecallCell {
+                                cell.configureWithMessage(message)
+                            }
+
+                        } else {
+                            if message.openGraphInfo != nil {
+
+                                if let cell = cell as? ChatLeftTextURLCell {
+
+                                    cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), collectionView: collectionView, indexPath: indexPath)
+
+                                    cell.tapUsernameAction = { [weak self] username in
+                                        println("left textURL cell.tapUsernameAction: \(username)")
+                                        self?.tryShowProfileWithUsername(username)
+                                    }
+
+                                    cell.tapOpenGraphURLAction = { [weak self] URL in
+                                        self?.yep_openURL(URL)
+                                    }
+                                }
+
+                            } else {
                             
-                            cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), collectionView: collectionView, indexPath: indexPath)
+                                if let cell = cell as? ChatLeftTextCell {
+                                    
+                                    cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), collectionView: collectionView, indexPath: indexPath)
+
+                                    cell.tapUsernameAction = { [weak self] username in
+                                        println("left text cell.tapUsernameAction: \(username)")
+                                        self?.tryShowProfileWithUsername(username)
+                                    }
+                                }
+                            }
+
+                            tryDetectOpenGraphForMessage(message)
                         }
                     }
                     
@@ -3854,7 +3802,7 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                                     YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend image?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
                                         
                                         resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
-                                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
                                             
                                             YepAlert.alertSorry(message: NSLocalizedString("Failed to resend image!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
                                             
@@ -3892,7 +3840,7 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                                     YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend audio?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
                                         
                                         resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
-                                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
                                             
                                             YepAlert.alertSorry(message: NSLocalizedString("Failed to resend audio!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
                                             
@@ -3922,7 +3870,7 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                                     YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend video?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
                                         
                                         resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
-                                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
                                             
                                             YepAlert.alertSorry(message: NSLocalizedString("Failed to resend video!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
                                             
@@ -3958,7 +3906,7 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                                     YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend location?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
                                         
                                         resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
-                                            defaultFailureHandler(reason, errorMessage: errorMessage)
+                                            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
                                             
                                             YepAlert.alertSorry(message: NSLocalizedString("Failed to resend location!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
                                             
@@ -3986,41 +3934,134 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
                         }
                         
                     default:
-                        
-                        if let cell = cell as? ChatRightTextCell {
-                            
-                            cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), mediaTapAction: { [weak self] in
-                                
-                                if message.sendState == MessageSendState.Failed.rawValue {
-                                    
-                                    YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend text?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
-                                        
-                                        resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
-                                            defaultFailureHandler(reason, errorMessage: errorMessage)
-                                            
-                                            YepAlert.alertSorry(message: NSLocalizedString("Failed to resend text!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
-                                            
-                                        }, completion: { success in
-                                            println("resendText: \(success)")
-                                        })
-                                        
-                                    }, cancelAction: {
-                                    })
-                                }
-                            }, collectionView: collectionView, indexPath: indexPath)
+
+                        let mediaTapAction: () -> Void = { [weak self] in
+
+                            guard message.sendState == MessageSendState.Failed.rawValue else {
+                                return
+                            }
+
+                            YepAlert.confirmOrCancel(title: NSLocalizedString("Action", comment: ""), message: NSLocalizedString("Resend text?", comment: ""), confirmTitle: NSLocalizedString("Resend", comment: ""), cancelTitle: NSLocalizedString("Cancel", comment: ""), inViewController: self, withConfirmAction: {
+
+                                resendMessage(message, failureHandler: { [weak self] reason, errorMessage in
+                                    defaultFailureHandler(reason: reason, errorMessage: errorMessage)
+
+                                    YepAlert.alertSorry(message: NSLocalizedString("Failed to resend text!\nPlease make sure your iPhone is connected to the Internet.", comment: ""), inViewController: self)
+
+                                    }, completion: { success in
+                                        println("resendText: \(success)")
+                                })
+
+                            }, cancelAction: {
+                            })
                         }
+
+                        if message.openGraphInfo != nil {
+
+                            if let cell = cell as? ChatRightTextURLCell {
+
+                                cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), mediaTapAction: mediaTapAction, collectionView: collectionView, indexPath: indexPath)
+
+                                cell.tapUsernameAction = { [weak self] username in
+                                    println("right textURL cell.tapUsernameAction: \(username)")
+                                    self?.tryShowProfileWithUsername(username)
+                                }
+
+                                cell.tapOpenGraphURLAction = { [weak self] URL in
+                                    self?.yep_openURL(URL)
+                                }
+                            }
+
+                        } else {
+
+                            if let cell = cell as? ChatRightTextCell {
+
+                                cell.configureWithMessage(message, textContentLabelWidth: textContentLabelWidthOfMessage(message), mediaTapAction: mediaTapAction, collectionView: collectionView, indexPath: indexPath)
+
+                                cell.tapUsernameAction = { [weak self] username in
+                                    println("right text cell.tapUsernameAction: \(username)")
+                                    self?.tryShowProfileWithUsername(username)
+                                }
+                            }
+                        }
+
+                        tryDetectOpenGraphForMessage(message)
                     }
                 }
             }
         }
     }
 
+    private func tryDetectOpenGraphForMessage(message: Message) {
+
+        guard !message.openGraphDetected else {
+            return
+        }
+
+        func markMessageOpenGraphDetected() {
+            let _ = try? realm.write {
+                message.openGraphDetected = true
+            }
+        }
+
+        let text = message.textContent
+        guard let fisrtURL = text.yep_embeddedURLs.first else {
+            markMessageOpenGraphDetected()
+            return
+        }
+
+        openGraphWithURL(fisrtURL, failureHandler: { reason, errorMessage in
+            defaultFailureHandler(reason: reason, errorMessage: errorMessage)
+
+            dispatch_async(dispatch_get_main_queue()) {
+                markMessageOpenGraphDetected()
+            }
+
+        }, completion: { _openGraph in
+            println("message_openGraph: \(_openGraph)")
+
+            guard _openGraph.isValid else {
+                return
+            }
+
+            dispatch_async(dispatch_get_main_queue()) { [weak self] in
+
+                guard let strongSelf = self else {
+                    return
+                }
+
+                let openGraphInfo = OpenGraphInfo(URLString: _openGraph.URL.absoluteString, siteName: _openGraph.siteName ?? "", title: _openGraph.title ?? "", infoDescription: _openGraph.description ?? "", thumbnailImageURLString: _openGraph.previewImageURLString ?? "")
+
+                let _ = try? strongSelf.realm.write {
+                    strongSelf.realm.add(openGraphInfo, update: true)
+                    message.openGraphInfo = openGraphInfo
+                }
+
+                markMessageOpenGraphDetected()
+
+                // update UI
+                strongSelf.clearHeightOfMessageWithKey(message.messageID)
+
+                if let index = strongSelf.messages.indexOf(message) {
+                    let realIndex = index - strongSelf.displayedMessagesRange.location
+                    let indexPath = NSIndexPath(forItem: realIndex, inSection: 0)
+                    strongSelf.conversationCollectionView.reloadItemsAtIndexPaths([indexPath])
+
+                    // only for latest one need to scroll
+                    if index == (strongSelf.displayedMessagesRange.location + strongSelf.displayedMessagesRange.length - 1) {
+                        strongSelf.conversationCollectionView.scrollToItemAtIndexPath(indexPath, atScrollPosition: .Bottom, animated: true)
+                    }
+                }
+            }
+        })
+    }
+
     func collectionView(collectionView: UICollectionView!, layout collectionViewLayout: UICollectionViewLayout!, sizeForItemAtIndexPath indexPath: NSIndexPath!) -> CGSize {
 
         if let message = messages[safe: (displayedMessagesRange.location + indexPath.item)] {
-            
+
             let height = heightOfMessage(message)
-            
+
             return CGSize(width: collectionViewWidth, height: height)
 
         } else {
@@ -4073,7 +4114,6 @@ extension ConversationViewController: UICollectionViewDataSource, UICollectionVi
         
         dragBeginLocation = nil
     }
-
 }
 
 // MARK: FayeServiceDelegate
@@ -4357,6 +4397,14 @@ extension ConversationViewController: UIImagePickerControllerDelegate, UINavigat
         // Do send
 
         let imageData = UIImageJPEGRepresentation(image, YepConfig.messageImageCompressionQuality())!
+        /*
+        var imageData = UIImageJPEGRepresentation(image, YepConfig.messageImageCompressionQuality())!
+
+        if let progressiveImage = UIImage(data: imageData)?.yep_progressiveImage {
+
+            imageData = UIImageJPEGRepresentation(progressiveImage, YepConfig.messageImageCompressionQuality())!
+        }
+        */
 
         let messageImageName = NSUUID().UUIDString
 
@@ -4383,7 +4431,7 @@ extension ConversationViewController: UIImagePickerControllerDelegate, UINavigat
                 }
 
             }, failureHandler: { [weak self] reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                 YepAlert.alertSorry(message: NSLocalizedString("Failed to send image!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -4413,7 +4461,7 @@ extension ConversationViewController: UIImagePickerControllerDelegate, UINavigat
                 }
                 
             }, failureHandler: { [weak self] reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                 YepAlert.alertSorry(message: NSLocalizedString("Failed to send image!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -4518,7 +4566,7 @@ extension ConversationViewController: UIImagePickerControllerDelegate, UINavigat
         if let withFriend = conversation.withFriend {
 
             sendVideoInFilePath(videoURL.path!, orFileData: nil, metaData: metaData, toRecipient: withFriend.userID, recipientType: "User", afterCreatedMessage: afterCreatedMessageAction, failureHandler: { [weak self] reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                 YepAlert.alertSorry(message: NSLocalizedString("Failed to send video!\nTry tap on message to resend.", comment: ""), inViewController: self)
 
@@ -4529,7 +4577,7 @@ extension ConversationViewController: UIImagePickerControllerDelegate, UINavigat
         } else if let withGroup = conversation.withGroup {
 
             sendVideoInFilePath(videoURL.path!, orFileData: nil, metaData: metaData, toRecipient: withGroup.groupID, recipientType: "Circle", afterCreatedMessage: afterCreatedMessageAction, failureHandler: { [weak self] reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                 YepAlert.alertSorry(message: NSLocalizedString("Failed to send video!\nTry tap on message to resend.", comment: ""), inViewController: self)
 

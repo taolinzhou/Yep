@@ -65,10 +65,15 @@ class SocialWorkGithubViewController: BaseViewController {
             updateGithubTableView()
         }
     }
+    
+    override func viewWillAppear(animated: Bool) {
+        
+        super.viewWillAppear(animated)
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        
+
 //        animatedOnNavigationBar = false
 
         if let socialAccount = socialAccount {
@@ -121,7 +126,7 @@ class SocialWorkGithubViewController: BaseViewController {
             if let userID = userID {
 
                 githubWorkOfUserWithUserID(userID, failureHandler: { [weak self] (reason, errorMessage) -> Void in
-                    defaultFailureHandler(reason, errorMessage: errorMessage)
+                    defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                     YepAlert.alertSorry(message: NSLocalizedString("Yep can't reach GitHub.\nWe blame GFW!", comment: ""), inViewController: self)
 

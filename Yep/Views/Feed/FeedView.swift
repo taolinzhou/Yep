@@ -49,6 +49,7 @@ class FeedView: UIView {
     var tapGithubRepoAction: (NSURL -> Void)?
     var tapDribbbleShotAction: (NSURL -> Void)?
     var tapLocationAction: ((locationName: String, locationCoordinate: CLLocationCoordinate2D) -> Void)?
+    var tapURLInfoAction: ((URL: NSURL) -> Void)?
 
     static let foldHeight: CGFloat = 60
 
@@ -157,6 +158,12 @@ class FeedView: UIView {
     
     @IBOutlet weak var socialWorkBorderImageView: UIImageView!
 
+    @IBOutlet weak var feedURLContainerView: FeedURLContainerView! {
+        didSet {
+            feedURLContainerView.compressionMode = true
+        }
+    }
+    
     @IBOutlet weak var timeLabel: UILabel!
     @IBOutlet weak var timeLabelTopConstraint: NSLayoutConstraint!
 
@@ -238,6 +245,9 @@ class FeedView: UIView {
 
         let tapLocation = UITapGestureRecognizer(target: self, action: "tapLocation:")
         locationContainerView.addGestureRecognizer(tapLocation)
+
+        let tapURLInfo = UITapGestureRecognizer(target: self, action: "tapURLInfo:")
+        feedURLContainerView.addGestureRecognizer(tapURLInfo)
     }
 
     func switchFold(sender: UITapGestureRecognizer) {
@@ -285,6 +295,8 @@ class FeedView: UIView {
         messageTextViewHeightConstraint.constant = ceil(rect.height)
     }
 
+    private weak var audioPlaybackTimer: NSTimer?
+
     private func configureWithFeed(feed: ConversationFeed) {
 
         let message = feed.body
@@ -304,7 +316,7 @@ class FeedView: UIView {
         messageLabelTrailingConstraint.constant = attachments.isEmpty ? 15 : 60
 
         if let creator = feed.creator {
-            let userAvatar = UserAvatar(userID: creator.userID, avatarStyle: nanoAvatarStyle)
+            let userAvatar = UserAvatar(userID: creator.userID, avatarURLString: creator.avatarURLString, avatarStyle: nanoAvatarStyle)
             avatarImageView.navi_setAvatar(userAvatar, withFadeTransitionDuration: avatarFadeTransitionDuration)
 
             nicknameLabel.text = creator.nickname
@@ -336,6 +348,23 @@ class FeedView: UIView {
             mediaCollectionView.hidden = true
             socialWorkContainerView.hidden = true
             voiceContainerView.hidden = true
+            feedURLContainerView.hidden = true
+
+        case .URL:
+
+            mediaCollectionView.hidden = true
+            socialWorkContainerView.hidden = false
+            voiceContainerView.hidden = true
+
+            feedURLContainerView.hidden = false
+
+            socialWorkBorderImageView.hidden = true
+
+            socialWorkContainerViewHeightConstraint.constant = 80
+
+            if let openGraphInfo = feed.openGraphInfo {
+                feedURLContainerView.configureWithOpenGraphInfoType(openGraphInfo)
+            }
 
         case .Image:
 
@@ -355,6 +384,7 @@ class FeedView: UIView {
             githubRepoContainerView.hidden = false
             voiceContainerView.hidden = true
             locationContainerView.hidden = true
+            feedURLContainerView.hidden = true
 
             socialWorkBorderImageView.hidden = false
 
@@ -376,6 +406,7 @@ class FeedView: UIView {
             githubRepoContainerView.hidden = true
             voiceContainerView.hidden = true
             locationContainerView.hidden = true
+            feedURLContainerView.hidden = true
 
             socialWorkBorderImageView.hidden = false
 
@@ -395,6 +426,7 @@ class FeedView: UIView {
             githubRepoContainerView.hidden = true
             voiceContainerView.hidden = false
             locationContainerView.hidden = true
+            feedURLContainerView.hidden = true
 
             socialWorkBorderImageView.hidden = true
 
@@ -412,6 +444,14 @@ class FeedView: UIView {
                 voiceSampleViewWidthConstraint.constant = CGFloat(audioSampleValues.count) * 3
             }
 
+            if let audioPlayer = YepAudioService.sharedManager.audioPlayer where audioPlayer.playing {
+                if let feedID = YepAudioService.sharedManager.playingFeedAudio?.feedID where feedID == feed.feedID {
+                    audioPlaying = true
+
+                    audioPlaybackTimer = NSTimer.scheduledTimerWithTimeInterval(0.02, target: self, selector: "updateAudioPlaybackProgress:", userInfo: nil, repeats: true)
+                }
+            }
+
         case .Location:
 
             mediaCollectionView.hidden = true
@@ -421,6 +461,7 @@ class FeedView: UIView {
             githubRepoContainerView.hidden = true
             voiceContainerView.hidden = true
             locationContainerView.hidden = false
+            feedURLContainerView.hidden = true
 
             socialWorkBorderImageView.hidden = false
 
@@ -480,6 +521,16 @@ class FeedView: UIView {
         tapLocationAction?(locationName: locationName, locationCoordinate: locationCoordinate)
     }
 
+    func tapURLInfo(sender: UITapGestureRecognizer) {
+        guard let URL = feed?.openGraphInfo?.URL else {
+            return
+        }
+
+        tapURLInfoAction?(URL: URL)
+    }
+
+    var syncPlayAudioAction: (() -> Void)?
+
     @IBAction func playOrPauseAudio(sender: UIButton) {
 
         if AVAudioSession.sharedInstance().category == AVAudioSessionCategoryRecord {
@@ -502,10 +553,14 @@ class FeedView: UIView {
 
                 if let strongSelf = self {
 
-                    let playbackTimer = NSTimer.scheduledTimerWithTimeInterval(0.02, target: strongSelf, selector: "updateAudioPlaybackProgress:", userInfo: nil, repeats: true)
-                    YepAudioService.sharedManager.playbackTimer = playbackTimer
+                    strongSelf.audioPlaybackTimer?.invalidate()
+                    strongSelf.audioPlaybackTimer = NSTimer.scheduledTimerWithTimeInterval(0.02, target: strongSelf, selector: "updateAudioPlaybackProgress:", userInfo: nil, repeats: true)
+
+                    YepAudioService.sharedManager.playbackTimer = strongSelf.audioPlaybackTimer
 
                     strongSelf.audioPlaying = true
+
+                    strongSelf.syncPlayAudioAction?()
                 }
             })
         }
@@ -615,6 +670,8 @@ extension FeedView: AVAudioPlayerDelegate {
 
         audioPlayedDuration = 0
         audioPlaying = false
-        YepAudioService.sharedManager.playingFeedAudio = nil
+        
+        YepAudioService.sharedManager.resetToDefault()
     }
 }
+

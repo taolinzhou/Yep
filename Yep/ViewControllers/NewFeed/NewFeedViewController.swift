@@ -12,7 +12,6 @@ import MobileCoreServices
 import Photos
 import Proposer
 import RealmSwift
-import Crashlytics
 import Kingfisher
 import MapKit
 
@@ -108,7 +107,7 @@ class NewFeedViewController: SegueViewController {
         return imageView
     }()
 
-    private let infoAboutThisFeed = NSLocalizedString("Info about this Feed...", comment: "")
+    private let placeholderOfFeed = NSLocalizedString("Introduce a thing, share an idea, describe a problem ...", comment: "")
 
     private var isNeverInputMessage = true
     private var isDirty = false {
@@ -116,7 +115,7 @@ class NewFeedViewController: SegueViewController {
             postButton.enabled = newValue
 
             if !newValue && isNeverInputMessage {
-                messageTextView.text = infoAboutThisFeed
+                messageTextView.text = placeholderOfFeed
             }
 
             messageTextView.textColor = newValue ? UIColor.blackColor() : UIColor.lightGrayColor()
@@ -163,10 +162,10 @@ class NewFeedViewController: SegueViewController {
             case .Uploading:
                 postButton.enabled = false
                 messageTextView.resignFirstResponder()
-                //YepHUD.showActivityIndicator()
+                YepHUD.showActivityIndicator()
 
             case .Failed(let message):
-                //YepHUD.hideActivityIndicator()
+                YepHUD.hideActivityIndicator()
                 postButton.enabled = true
 
                 if presentingViewController != nil {
@@ -176,7 +175,7 @@ class NewFeedViewController: SegueViewController {
                 }
 
             case .Success:
-                //YepHUD.hideActivityIndicator()
+                YepHUD.hideActivityIndicator()
                 messageTextView.text = nil
             }
         }
@@ -443,7 +442,6 @@ class NewFeedViewController: SegueViewController {
                 for image in images {
                     self?.mediaImages.append(image)
                 }
-//                self?.imageAssets = imageAssets
             }
         }
     }
@@ -546,12 +544,6 @@ class NewFeedViewController: SegueViewController {
         self.dismissViewControllerAnimated(true, completion: nil)
     }
     
-//    private struct UploadImageInfo {
-//        
-//        let s3UploadParams: S3UploadParams
-//        let metaDataString: String?
-//    }
-
     func tryMakeUploadingFeed() -> DiscoveredFeed? {
 
         guard let
@@ -647,69 +639,112 @@ class NewFeedViewController: SegueViewController {
         }
 
         if !again {
+            uploadState = .Uploading
+
             if let feed = tryMakeUploadingFeed() where feed.kind.needBackgroundUpload {
                 beforeUploadingFeedAction?(feed: feed, newFeedViewController: self)
 
+                YepHUD.hideActivityIndicator()
                 dismissViewControllerAnimated(true, completion: nil)
             }
         }
 
-        uploadState = .Uploading
-        
         let message = messageTextView.text.trimming(.WhitespaceAndNewline)
         let coordinate = YepLocationService.sharedManager.currentLocation?.coordinate
         var kind: FeedKind = .Text
         var attachments: [JSONDictionary]?
 
-        let doCreateFeed: () -> Void = { [weak self] in
+        let tryCreateFeed: () -> Void = { [weak self] in
 
-            if let userID = YepUserDefaults.userID.value, nickname = YepUserDefaults.nickname.value {
-                Answers.logCustomEventWithName("New Feed",
-                    customAttributes: [
-                        "userID": userID,
-                        "nickname": nickname,
-                        "time": NSDate().description
-                    ])
+            var openGraph: OpenGraph?
+
+            let doCreateFeed: () -> Void = { [weak self] in
+
+                if let openGraph = openGraph where openGraph.isValid {
+
+                    kind = .URL
+
+                    let URLInfo = [
+                        "url": openGraph.URL.absoluteString,
+                        "site_name": (openGraph.siteName ?? "").yep_truncatedForFeed,
+                        "title": (openGraph.title ?? "").yep_truncatedForFeed,
+                        "description": (openGraph.description ?? "").yep_truncatedForFeed,
+                        "image_url": openGraph.previewImageURLString ?? "",
+                    ]
+
+                    attachments = [URLInfo]
+                }
+
+                createFeedWithKind(kind, message: message, attachments: attachments, coordinate: coordinate, skill: self?.pickedSkill, allowComment: true, failureHandler: { [weak self] reason, errorMessage in
+                    defaultFailureHandler(reason: reason, errorMessage: errorMessage)
+
+                    dispatch_async(dispatch_get_main_queue()) { [weak self] in
+                        let message = errorMessage ?? NSLocalizedString("Create feed failed!", comment: "")
+                        self?.uploadState = .Failed(message: message)
+                    }
+
+                }, completion: { data in
+                    println("createFeedWithKind: \(data)")
+
+                    dispatch_async(dispatch_get_main_queue()) { [weak self] in
+
+                        self?.uploadState = .Success
+
+                        if let feed = DiscoveredFeed.fromFeedInfo(data, groupInfo: nil) {
+                            self?.afterCreatedFeedAction?(feed: feed)
+                        }
+
+                        if !kind.needBackgroundUpload {
+                            self?.dismissViewControllerAnimated(true, completion: nil)
+                        }
+                    }
+                    
+                    syncGroupsAndDoFurtherAction {}
+                })
             }
 
-            createFeedWithKind(kind, message: message, attachments: attachments, coordinate: coordinate, skill: self?.pickedSkill, allowComment: true, failureHandler: { [weak self] reason, errorMessage in
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+            guard kind.needParseOpenGraph, let fisrtURL = message.yep_embeddedURLs.first else {
+                doCreateFeed()
 
-                dispatch_async(dispatch_get_main_queue()) { [weak self] in
-                    let message = errorMessage ?? NSLocalizedString("Create feed failed!", comment: "")
-                    self?.uploadState = .Failed(message: message)
+                return
+            }
+
+            let parseOpenGraphGroup = dispatch_group_create()
+
+
+            dispatch_group_enter(parseOpenGraphGroup)
+
+            openGraphWithURL(fisrtURL, failureHandler: { reason, errorMessage in
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
+
+                dispatch_async(dispatch_get_main_queue()) {
+                    dispatch_group_leave(parseOpenGraphGroup)
                 }
 
-            }, completion: { data in
-                println("createFeedWithKind: \(data)")
+            }, completion: { _openGraph in
+                println("_openGraph: \(_openGraph)")
 
-                dispatch_async(dispatch_get_main_queue()) { [weak self] in
+                dispatch_async(dispatch_get_main_queue()) {
+                    openGraph = _openGraph
 
-                    self?.uploadState = .Success
-
-                    if let feed = DiscoveredFeed.fromFeedInfo(data, groupInfo: nil) {
-                        self?.afterCreatedFeedAction?(feed: feed)
-                    }
-
-                    if !kind.needBackgroundUpload {
-                        self?.dismissViewControllerAnimated(true, completion: nil)
-                    }
+                    dispatch_group_leave(parseOpenGraphGroup)
                 }
-                
-                syncGroupsAndDoFurtherAction {}
             })
+
+            dispatch_group_notify(parseOpenGraphGroup, dispatch_get_main_queue()) {
+                doCreateFeed()
+            }
         }
 
         switch attachment {
 
         case .Default:
 
-            let uploadImagesGroup = dispatch_group_create()
-
-            //var uploadImageInfos = [UploadImageInfo]()
-            var uploadAttachmentIDs = [String]()
-
             let mediaImagesCount = mediaImages.count
+
+            let uploadImagesQueue = NSOperationQueue()
+            var uploadAttachmentOperations = [UploadAttachmentOperation]()
+            var uploadAttachmentIDs = [String]()
             var uploadErrorMessage: String?
 
             mediaImages.forEach({ image in
@@ -734,93 +769,64 @@ class NewFeedViewController: SegueViewController {
 
                 if let image = image.resizeToSize(fixedSize, withInterpolationQuality: CGInterpolationQuality.High), imageData = UIImageJPEGRepresentation(image, 0.95) {
 
-                    dispatch_group_enter(uploadImagesGroup)
-
                     let source: UploadAttachment.Source = .Data(imageData)
-
                     let metaDataString = metaDataStringOfImage(image, needBlurThumbnail: false)
-
                     let uploadAttachment = UploadAttachment(type: .Feed, source: source, fileExtension: .JPEG, metaDataString: metaDataString)
 
-                    tryUploadAttachment(uploadAttachment, failureHandler: { (reason, errorMessage) in
-
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
-
-                        dispatch_async(dispatch_get_main_queue()) {
-                            uploadErrorMessage = errorMessage
-                            dispatch_group_leave(uploadImagesGroup)
-                        }
-                        
-                    }, completion: { uploadAttachmentID in
-
-                        dispatch_async(dispatch_get_main_queue()) {
+                    let operation = UploadAttachmentOperation(uploadAttachment: uploadAttachment)
+                    operation.completionBlock = {
+                        if let uploadAttachmentID = operation.uploadAttachmentID {
                             uploadAttachmentIDs.append(uploadAttachmentID)
-
-                            dispatch_group_leave(uploadImagesGroup)
                         }
-                    })
-
-                    /*
-                    let fileExtension: FileExtension = .JPEG
-
-                    s3UploadFileOfKind(.Feed, withFileExtension: fileExtension, inFilePath: nil, orFileData: imageData, mimeType: fileExtension.mimeType, failureHandler: { (reason, errorMessage) in
-
-                        defaultFailureHandler(reason, errorMessage: errorMessage)
-
-                        dispatch_async(dispatch_get_main_queue()) {
-                            uploadErrorMessage = errorMessage
-                            dispatch_group_leave(uploadImagesGroup)
+                        if let _uploadErrorMessage = operation.uploadErrorMessage {
+                            uploadErrorMessage = _uploadErrorMessage
                         }
-
-                    }, completion: { s3UploadParams in
-
-                        // Prepare meta data
-
-                        let metaDataString = metaDataStringOfImage(image, needBlurThumbnail: false)
-
-                        let uploadImageInfo = UploadImageInfo(s3UploadParams: s3UploadParams, metaDataString: metaDataString)
-
-                        dispatch_async(dispatch_get_main_queue()) {
-                            uploadImageInfos.append(uploadImageInfo)
-
-                            dispatch_group_leave(uploadImagesGroup)
-                        }
-                    })
-                    */
+                    }
+                    uploadAttachmentOperations.append(operation)
                 }
             })
 
-            dispatch_group_notify(uploadImagesGroup, dispatch_get_main_queue()) { [weak self] in
+            if uploadAttachmentOperations.count > 1 {
+                for i in 1..<uploadAttachmentOperations.count {
+                    let previousOperation = uploadAttachmentOperations[i-1]
+                    let currentOperation = uploadAttachmentOperations[i]
+
+                    currentOperation.addDependency(previousOperation)
+                }
+            }
+
+            let uploadFinishOperation = NSBlockOperation { [weak self] in
 
                 guard uploadAttachmentIDs.count == mediaImagesCount else {
                     let message = uploadErrorMessage ?? NSLocalizedString("Upload failed!", comment: "")
-                    self?.uploadState = .Failed(message: message)
+
+                    NSOperationQueue.mainQueue().addOperationWithBlock {
+                        self?.uploadState = .Failed(message: message)
+                    }
 
                     return
                 }
 
                 if !uploadAttachmentIDs.isEmpty {
 
-                    /*
-                    let imageInfosData = uploadImageInfos.map({
-                        [
-                            "file": $0.s3UploadParams.key,
-                            "metadata": $0.metaDataString ?? "",
-                        ]
-                    })
-                    */
-
                     let imageInfos: [JSONDictionary] = uploadAttachmentIDs.map({
                         ["id": $0]
                     })
 
                     attachments = imageInfos
-
+                    
                     kind = .Image
                 }
-
-                doCreateFeed()
+                
+                tryCreateFeed()
             }
+
+            if let lastUploadAttachmentOperation = uploadAttachmentOperations.last {
+                uploadFinishOperation.addDependency(lastUploadAttachmentOperation)
+            }
+
+            uploadImagesQueue.addOperations(uploadAttachmentOperations, waitUntilFinished: false)
+            uploadImagesQueue.addOperation(uploadFinishOperation)
 
         case .SocialWork(let socialWork):
 
@@ -872,7 +878,7 @@ class NewFeedViewController: SegueViewController {
                 break
             }
 
-            doCreateFeed()
+            tryCreateFeed()
 
         case .Voice(let feedVoice):
 
@@ -900,7 +906,7 @@ class NewFeedViewController: SegueViewController {
 
             tryUploadAttachment(uploadAttachment, failureHandler: { (reason, errorMessage) in
 
-                defaultFailureHandler(reason, errorMessage: errorMessage)
+                defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                 dispatch_async(dispatch_get_main_queue()) {
                     uploadErrorMessage = errorMessage
@@ -920,34 +926,6 @@ class NewFeedViewController: SegueViewController {
                 }
             })
 
-            /*
-            let fileExtension: FileExtension = .M4A
-
-            s3UploadFileOfKind(.Feed, withFileExtension: fileExtension, inFilePath: feedVoice.fileURL.path, orFileData: nil, mimeType: fileExtension.mimeType, failureHandler: { (reason, errorMessage) in
-
-                defaultFailureHandler(reason, errorMessage: errorMessage)
-
-                dispatch_async(dispatch_get_main_queue()) {
-                    uploadErrorMessage = errorMessage
-
-                    dispatch_group_leave(uploadVoiceGroup)
-                }
-
-            }, completion: { s3UploadParams in
-
-                let audioInfo: JSONDictionary = [
-                    "file": s3UploadParams.key,
-                    "metadata": metaDataString,
-                ]
-
-                attachments = [audioInfo]
-
-                dispatch_async(dispatch_get_main_queue()) {
-                    dispatch_group_leave(uploadVoiceGroup)
-                }
-            })
-            */
-
             dispatch_group_notify(uploadVoiceGroup, dispatch_get_main_queue()) { [weak self] in
 
                 guard attachments != nil else {
@@ -958,7 +936,8 @@ class NewFeedViewController: SegueViewController {
                 }
 
                 kind = .Audio
-                doCreateFeed()
+
+                tryCreateFeed()
 
                 self?.tryDeleteFeedVoice()
             }
@@ -975,7 +954,7 @@ class NewFeedViewController: SegueViewController {
 
             kind = .Location
 
-            doCreateFeed()
+            tryCreateFeed()
         }
     }
 
@@ -1053,9 +1032,14 @@ extension NewFeedViewController: UICollectionViewDataSource, UICollectionViewDel
             let cameraAction: UIAlertAction = UIAlertAction(title: NSLocalizedString("Camera", comment: ""), style: .Default) { action -> Void in
 
                 proposeToAccess(.Camera, agreed: { [weak self] in
-                    
+
+                    guard UIImagePickerController.isSourceTypeAvailable(.Camera) else {
+                        self?.alertCanNotOpenCamera()
+                        return
+                    }
+
                     if let strongSelf = self {
-                        strongSelf.imagePicker.sourceType = UIImagePickerControllerSourceType.Camera
+                        strongSelf.imagePicker.sourceType = .Camera
                         strongSelf.presentViewController(strongSelf.imagePicker, animated: true, completion: nil)
                     }
                     

@@ -43,6 +43,20 @@ class ConversationsViewController: SegueViewController {
         }
     }
 
+    private var unreadMessagesCount: Int = 0 {
+        willSet {
+            dispatch_async(dispatch_get_main_queue()) { [weak self] in
+                if newValue > 0 {
+                    self?.navigationItem.title = "Yep(\(newValue))"
+                } else {
+                    self?.navigationItem.title = "Yep"
+                }
+            }
+
+            println("unreadMessagesCount: \(unreadMessagesCount)")
+        }
+    }
+
     private lazy var noConversationFooterView: InfoView = InfoView(NSLocalizedString("Have a nice day!", comment: ""))
 
     private var noConversation = false {
@@ -63,7 +77,7 @@ class ConversationsViewController: SegueViewController {
     private lazy var conversations: Results<Conversation> = {
         let predicate = NSPredicate(format: "type = %d", ConversationType.OneToOne.rawValue)
         return self.realm.objects(Conversation).filter(predicate).sorted("updatedUnixTime", ascending: false)
-        }()
+    }()
 
     private struct Listener {
         static let Nickname = "ConversationsViewController.Nickname"
@@ -97,6 +111,8 @@ class ConversationsViewController: SegueViewController {
         NSNotificationCenter.defaultCenter().addObserver(self, selector: "reloadConversationsTableView", name: YepConfig.Notification.changedConversation, object: nil)
 
         NSNotificationCenter.defaultCenter().addObserver(self, selector: "reloadConversationsTableView", name: YepConfig.Notification.markAsReaded, object: nil)
+
+        NSNotificationCenter.defaultCenter().addObserver(self, selector: "reloadConversationsTableView", name: YepConfig.Notification.updatedUser, object: nil)
         
         // 确保自己发送消息的时候，会话列表也会刷新，避免时间戳不一致
         NSNotificationCenter.defaultCenter().addObserver(self, selector: "reloadConversationsTableView", name: MessageNotification.MessageStateChanged, object: nil)
@@ -136,7 +152,9 @@ class ConversationsViewController: SegueViewController {
         realmNotificationToken = realm.addNotificationBlock { [weak self] notification, realm in
             if let strongSelf = self {
 
-                let haveOneToOneUnreadMessages = countOfUnreadMessagesInRealm(realm, withConversationType: .OneToOne) > 0
+                strongSelf.unreadMessagesCount = countOfUnreadMessagesInRealm(realm, withConversationType: .OneToOne)
+
+                let haveOneToOneUnreadMessages = strongSelf.unreadMessagesCount > 0
 
                 strongSelf.haveUnreadMessages = haveOneToOneUnreadMessages || (countOfUnreadMessagesInRealm(realm, withConversationType: .Group) > 0)
 
@@ -148,21 +166,30 @@ class ConversationsViewController: SegueViewController {
             YepLocationService.turnOn()
         }
 
+        cacheInAdvance()
+
         #if DEBUG
-//            view.addSubview(conversationsFPSLabel)
+            //view.addSubview(conversationsFPSLabel)
         #endif
     }
 
     private func cacheInAdvance() {
 
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0)) {
 
-            // 聊天界面的小头像
+            // 最近一天活跃的好友
 
-            for user in normalUsers() {
+            for user in normalFriends().filter("lastSignInUnixTime > %@", NSDate().timeIntervalSince1970 - 60*60*24) {
 
-                let userAvatar = UserAvatar(userID: user.userID, avatarStyle: nanoAvatarStyle)
-                AvatarPod.wakeAvatar(userAvatar, completion: { _, _, _ in })
+                do {
+                    let userAvatar = UserAvatar(userID: user.userID, avatarURLString: user.avatarURLString, avatarStyle: miniAvatarStyle)
+                    AvatarPod.wakeAvatar(userAvatar, completion: { _, _, _ in })
+                }
+
+                do {
+                    let userAvatar = UserAvatar(userID: user.userID, avatarURLString: user.avatarURLString, avatarStyle: nanoAvatarStyle)
+                    AvatarPod.wakeAvatar(userAvatar, completion: { _, _, _ in })
+                }
             }
 
             /*
@@ -238,40 +265,18 @@ class ConversationsViewController: SegueViewController {
         }
     }
 
-    override func viewWillAppear(animated: Bool) {
-        super.viewWillAppear(animated)
-    }
+    var isFirstAppear = true
 
     override func viewDidAppear(animated: Bool) {
         super.viewDidAppear(animated)
-        
-        delay(0.5) { [weak self] in
-            self?.askForNotification()
+
+        if isFirstAppear {
+            delay(0.5) { [weak self] in
+                self?.askForNotification()
+            }
         }
 
-        // 预先生成小头像
-        cacheInAdvance()
-
-        // test open graph
-        /*
-        [
-            //"https://itunes.apple.com/cn/album/hello-single/id1051365605?i=1051366040&l=en",
-            //"https://itun.es/cn/5_268?i=1022063849",
-            //"www.douban.com",
-            //"http://swiftcn.io/topics/64?f=w",
-            //"https://github.com/",
-            //"http://www.douban.com/note/431101390/",
-            //"https://itunes.apple.com/us/movie/headhunters/id550338059", // 电影
-            //"https://itunes.apple.com/cn/album/19-standard-edition/id270409624?l=en", // 专辑
-            //"https://itunes.apple.com/cn/album/hello-single/id1051365605?i=1051366040&l=en", // 单曲
-            "https://itunes.apple.com/us/book/swift-programming-language/id881256329", // 书
-            //"https://itunes.apple.com/cn/app/evernote/id281796108?l=en&mt=8", // APP
-        ].forEach({
-            openGraphWithURLString($0, failureHandler: nil, completion: { openGraph in
-                println("openGraph: \(openGraph)")
-            })
-        })
-        */
+        isFirstAppear = false
     }
     
     private func askForNotification() {
@@ -296,6 +301,7 @@ class ConversationsViewController: SegueViewController {
             category.identifier = "YepMessageNotification"
             category.setActions([replyAction, replyOKAction], forContext: UIUserNotificationActionContext.Minimal)
             
+            //JPUSHService.registerForRemoteNotificationTypes(
             APService.registerForRemoteNotificationTypes(
                 UIUserNotificationType.Badge.rawValue |
                     UIUserNotificationType.Sound.rawValue |
@@ -303,6 +309,7 @@ class ConversationsViewController: SegueViewController {
             
         } else {
             // 这里才开始向用户提示推送
+            //JPUSHService.registerForRemoteNotificationTypes(
             APService.registerForRemoteNotificationTypes(
                 UIUserNotificationType.Badge.rawValue |
                     UIUserNotificationType.Sound.rawValue |
@@ -377,6 +384,26 @@ extension ConversationsViewController: UITableViewDataSource, UITableViewDelegat
 
         case Section.FeedConversation.rawValue:
             let cell = tableView.dequeueReusableCellWithIdentifier(feedConversationDockCellID) as! FeedConversationDockCell
+            return cell
+
+        case Section.Conversation.rawValue:
+            let cell = tableView.dequeueReusableCellWithIdentifier(cellIdentifier) as! ConversationCell
+            return cell
+            
+        default:
+            return UITableViewCell()
+        }
+    }
+
+    func tableView(tableView: UITableView, willDisplayCell cell: UITableViewCell, forRowAtIndexPath indexPath: NSIndexPath) {
+
+        switch indexPath.section {
+
+        case Section.FeedConversation.rawValue:
+
+            guard let cell = cell as? FeedConversationDockCell else {
+                break
+            }
 
             cell.haveGroupUnreadMessages = countOfUnreadMessagesInRealm(realm, withConversationType: ConversationType.Group) > 0
 
@@ -396,10 +423,11 @@ extension ConversationsViewController: UITableViewDataSource, UITableViewDelegat
                 cell.chatLabel.text = NSLocalizedString("No messages yet.", comment: "")
             }
 
-            return cell
-
         case Section.Conversation.rawValue:
-            let cell = tableView.dequeueReusableCellWithIdentifier(cellIdentifier) as! ConversationCell
+
+            guard let cell = cell as? ConversationCell else {
+                break
+            }
 
             if let conversation = conversations[safe: indexPath.row] {
 
@@ -408,10 +436,28 @@ extension ConversationsViewController: UITableViewDataSource, UITableViewDelegat
                 cell.configureWithConversation(conversation, avatarRadius: radius, tableView: tableView, indexPath: indexPath)
             }
             
-            return cell
-            
         default:
-            return UITableViewCell()
+            break
+        }
+    }
+
+    func tableView(tableView: UITableView, didEndDisplayingCell cell: UITableViewCell, forRowAtIndexPath indexPath: NSIndexPath) {
+
+        switch indexPath.section {
+
+        case Section.FeedConversation.rawValue:
+            break
+
+        case Section.Conversation.rawValue:
+
+            guard let cell = cell as? ConversationCell else {
+                return
+            }
+
+            cell.avatarImageView.image = nil
+
+        default:
+            break
         }
     }
 

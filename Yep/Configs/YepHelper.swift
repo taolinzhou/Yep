@@ -10,8 +10,6 @@ import Foundation
 import RealmSwift
 import Navi
 
-
-
 typealias CancelableTask = (cancel: Bool) -> Void
 
 extension String {
@@ -51,6 +49,7 @@ func cancel(cancelableTask: CancelableTask?) {
 
 func unregisterThirdPartyPush() {
     dispatch_async(dispatch_get_main_queue()) {
+        //JPUSHService.setAlias(nil, callbackSelector: nil, object: nil)
         APService.setAlias(nil, callbackSelector: nil, object: nil)
         UIApplication.sharedApplication().applicationIconBadgeNumber = 0
     }
@@ -116,3 +115,50 @@ func cleanDiskCacheFolder() {
         
     }
 }
+
+extension UIImage {
+    class func imageWithColor(color: UIColor) -> UIImage {
+        let rect = CGRectMake(0.0, 0.0, 1.0, 1.0)
+        UIGraphicsBeginImageContext(rect.size)
+        let context = UIGraphicsGetCurrentContext()
+        
+        CGContextSetFillColorWithColor(context, color.CGColor)
+        CGContextFillRect(context, rect)
+        
+        let image = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return image
+    }
+}
+
+extension UINavigationBar {
+
+    func hideBottomHairline() {
+        let navigationBarImageView = hairlineImageViewInNavigationBar(self)
+        navigationBarImageView?.hidden = true
+    }
+    
+    func showBottomHairline() {
+        let navigationBarImageView = hairlineImageViewInNavigationBar(self)
+        navigationBarImageView?.hidden = false
+    }
+    
+    func changeBottomHairImage() {
+    }
+    
+    private func hairlineImageViewInNavigationBar(view: UIView) -> UIImageView? {
+        if let view = view as? UIImageView where view.bounds.height <= 1.0 {
+            return view
+        }
+
+        for subview in view.subviews {
+            if let imageView = hairlineImageViewInNavigationBar(subview) {
+                return imageView
+            }
+        }
+
+        return nil
+    }
+}
+

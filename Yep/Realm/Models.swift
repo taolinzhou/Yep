@@ -140,6 +140,10 @@ class User: Object {
     dynamic var avatar: Avatar?
     dynamic var badge: String = ""
 
+    override class func indexedProperties() -> [String] {
+        return ["userID"]
+    }
+
     dynamic var createdUnixTime: NSTimeInterval = NSDate().timeIntervalSince1970
     dynamic var lastSignInUnixTime: NSTimeInterval = NSDate().timeIntervalSince1970
 
@@ -189,6 +193,14 @@ class User: Object {
         return false
     }
 
+    var chatCellCompositedName: String {
+        if username.isEmpty {
+            return nickname
+        } else {
+            return "\(nickname) @\(username)"
+        }
+    }
+
     // 级联删除关联的数据对象
 
     func cascadeDeleteInRealm(realm: Realm) {
@@ -211,6 +223,17 @@ class User: Object {
         })
 
         realm.delete(self)
+    }
+}
+
+func ==(lhs: User, rhs: User) -> Bool {
+    return lhs.hashValue == rhs.hashValue
+}
+
+extension User: Hashable {
+
+    override var hashValue: Int {
+        return userID.hashValue
     }
 }
 
@@ -511,13 +534,14 @@ class Message: Object {
     dynamic var mediaType: Int = MessageMediaType.Text.rawValue
 
     dynamic var textContent: String = ""
-    var textContentToShow: String {
-        if deletedByCreator {
-            return NSLocalizedString("Recalled by creator.", comment: "")
-        } else {
-            return textContent
-        }
+
+    var recalledTextContent: String {
+        let nickname = fromFriend?.nickname ?? ""
+        return String(format: NSLocalizedString("%@ recalled a message.", comment: ""), nickname)
     }
+
+    dynamic var openGraphDetected: Bool = false
+    dynamic var openGraphInfo: OpenGraphInfo?
 
     dynamic var coordinate: Coordinate?
 
@@ -525,6 +549,8 @@ class Message: Object {
     dynamic var localAttachmentName: String = ""
     dynamic var thumbnailURLString: String = ""
     dynamic var localThumbnailName: String = ""
+    dynamic var attachmentID: String = ""
+    dynamic var attachmentExpiresUnixTime: NSTimeInterval = NSDate().timeIntervalSince1970 + (6 * 60 * 60 * 24) // 6天，过期时间s3为7天，客户端防止误差减去1天
 
     var nicknameWithTextContent: String {
         if let nickname = fromFriend?.nickname {
@@ -583,6 +609,15 @@ class Message: Object {
             realm.delete(mediaMetaData)
         }
 
+        // 除非没有谁指向 openGraphInfo，不然不能删除它
+        if let openGraphInfo = openGraphInfo {
+            if openGraphInfo.feeds.isEmpty {
+                if openGraphInfo.messages.count == 1, let first = openGraphInfo.messages.first where first == self {
+                    realm.delete(openGraphInfo)
+                }
+            }
+        }
+
         switch mediaType {
 
         case MessageMediaType.Image.rawValue:
@@ -615,7 +650,7 @@ class Message: Object {
                 
                 realm.delete(socialWork)
             }
-            
+
         default:
             break // TODO: if have other message media need to delete
         }
@@ -723,6 +758,15 @@ class Conversation: Object {
         return nil
     }
 
+    var mentionInitUsers: [UsernamePrefixMatchedUser] {
+
+        let userSet = Set<User>(messages.flatMap({ $0.fromFriend }).filter({ !$0.username.isEmpty }) ?? [])
+
+        let users = Array<User>(userSet).sort({ $0.lastSignInUnixTime > $1.lastSignInUnixTime }).map({ UsernamePrefixMatchedUser(userID: $0.userID, username: $0.username, nickname: $0.nickname, avatarURLString: $0.avatarURLString) })
+
+        return users
+    }
+
     dynamic var type: Int = ConversationType.OneToOne.rawValue
     dynamic var updatedUnixTime: NSTimeInterval = NSDate().timeIntervalSince1970
 
@@ -808,6 +852,51 @@ class FeedLocation: Object {
     dynamic var coordinate: Coordinate?
 }
 
+class OpenGraphInfo: Object {
+
+    dynamic var URLString: String = ""
+    dynamic var siteName: String = ""
+    dynamic var title: String = ""
+    dynamic var infoDescription: String = ""
+    dynamic var thumbnailImageURLString: String = ""
+
+    var messages: [Message] {
+        return linkingObjects(Message.self, forProperty: "openGraphInfo")
+    }
+    var feeds: [Feed] {
+        return linkingObjects(Feed.self, forProperty: "openGraphInfo")
+    }
+
+    override class func primaryKey() -> String? {
+        return "URLString"
+    }
+
+    override class func indexedProperties() -> [String] {
+        return ["URLString"]
+    }
+
+    convenience init(URLString: String, siteName: String, title: String, infoDescription: String, thumbnailImageURLString: String) {
+        self.init()
+
+        self.URLString = URLString
+        self.siteName = siteName
+        self.title = title
+        self.infoDescription = infoDescription
+        self.thumbnailImageURLString = thumbnailImageURLString
+    }
+
+    class func withURLString(URLString: String, inRealm realm: Realm) -> OpenGraphInfo? {
+        return realm.objects(OpenGraphInfo).filter("URLString = %@", URLString).first
+    }
+}
+
+extension OpenGraphInfo: OpenGraphInfoType {
+
+    var URL: NSURL {
+        return NSURL(string: URLString)!
+    }
+}
+
 class Feed: Object {
 
     dynamic var feedID: String = ""
@@ -826,6 +915,7 @@ class Feed: Object {
     dynamic var socialWork: MessageSocialWork?
     dynamic var audio: FeedAudio?
     dynamic var location: FeedLocation?
+    dynamic var openGraphInfo: OpenGraphInfo?
 
     dynamic var skill: UserSkill?
 
@@ -874,6 +964,15 @@ class Feed: Object {
             realm.delete(location)
         }
 
+        // 除非没有谁指向 openGraphInfo，不然不能删除它
+        if let openGraphInfo = openGraphInfo {
+            if openGraphInfo.messages.isEmpty {
+                if openGraphInfo.feeds.count == 1, let first = openGraphInfo.messages.first where first == self {
+                    realm.delete(openGraphInfo)
+                }
+            }
+        }
+
         realm.delete(self)
     }
 }
@@ -908,6 +1007,31 @@ class OfflineJSON: Object {
 
     class func withName(name: OfflineJSONName, inRealm realm: Realm) -> OfflineJSON? {
         return realm.objects(OfflineJSON).filter("name = %@", name.rawValue).first
+    }
+}
+
+class UserLocationName: Object {
+
+    dynamic var userID: String = ""
+    dynamic var locationName: String = ""
+
+    override class func primaryKey() -> String? {
+        return "userID"
+    }
+
+    override class func indexedProperties() -> [String] {
+        return ["userID"]
+    }
+
+    convenience init(userID: String, locationName: String) {
+        self.init()
+
+        self.userID = userID
+        self.locationName = locationName
+    }
+
+    class func withUserID(userID: String, inRealm realm: Realm) -> UserLocationName? {
+        return realm.objects(UserLocationName).filter("userID = %@", userID).first
     }
 }
 
@@ -985,13 +1109,6 @@ func countOfConversationsInRealm(realm: Realm, withConversationType conversation
     return realm.objects(Conversation).filter(predicate).count
 }
 
-//func countOfUnreadMessagesInRealm(realm: Realm) -> Int {
-//    let predicate = NSPredicate(format: "readed = false AND fromFriend != nil AND fromFriend.friendState != %d", UserFriendState.Me.rawValue)
-//    return realm.objects(Message).filter(predicate).count
-//
-//    //return realm.objects(Conversation).map({ $0.unreadMessagesCount }).reduce(0, combine: +)
-//}
-
 func countOfUnreadMessagesInRealm(realm: Realm, withConversationType conversationType: ConversationType) -> Int {
 
     switch conversationType {
@@ -1005,34 +1122,9 @@ func countOfUnreadMessagesInRealm(realm: Realm, withConversationType conversatio
 
         return count
     }
-
-    /*
-    let predicate = NSPredicate(format: "readed = false AND fromFriend != nil AND fromFriend.friendState != %d AND conversation != nil AND conversation.type = %d", UserFriendState.Me.rawValue, conversationType.rawValue)
-//    let messages = realm.objects(Message).filter(predicate)
-//    messages.forEach {
-//        println("X unread message.textContent: \($0.textContent), \($0.fromFriend?.nickname), \($0.conversation?.withGroup?.withFeed?.body)")
-//    }
-    return realm.objects(Message).filter(predicate).count
-
-    //return realm.objects(Conversation).filter("type = %d", conversationType.rawValue).map({ $0.unreadMessagesCount }).reduce(0, combine: +)
-    */
 }
 
 func countOfUnreadMessagesInConversation(conversation: Conversation) -> Int {
-//    let messages = conversation.messages.filter({ message in
-//        if let fromFriend = message.fromFriend {
-//            return (message.readed == false) && (fromFriend.friendState != UserFriendState.Me.rawValue)
-//        } else {
-//            return false
-//        }
-//    })
-//
-//    messages.forEach({
-//
-//        println("YEP: \($0.textContent), \($0.fromFriend?.nickname)")
-//    })
-//
-//    return messages.count
 
     return conversation.messages.filter({ message in
         if let fromFriend = message.fromFriend {
@@ -1044,9 +1136,6 @@ func countOfUnreadMessagesInConversation(conversation: Conversation) -> Int {
 }
 
 func latestValidMessageInRealm(realm: Realm, withConversationType conversationType: ConversationType) -> Message? {
-
-//    let predicate = NSPredicate(format: "fromFriend != nil AND conversation != nil AND conversation.type = %d", conversationType.rawValue)
-//    return realm.objects(Message).filter(predicate).sorted("updatedUnixTime", ascending: false).first
 
     switch conversationType {
 
@@ -1229,6 +1318,18 @@ func saveFeedWithDiscoveredFeed(feedData: DiscoveredFeed, group: Group, inRealm 
             feedLocation.coordinate = coordinate
 
             feed.location = feedLocation
+
+        case .URL(let info):
+
+            guard feed.openGraphInfo == nil else {
+                break
+            }
+
+            let openGraphInfo = OpenGraphInfo(URLString: info.URL.absoluteString, siteName: info.siteName, title: info.title, infoDescription: info.infoDescription, thumbnailImageURLString: info.thumbnailImageURLString)
+
+            realm.add(openGraphInfo, update: true)
+
+            feed.openGraphInfo = openGraphInfo
         }
     }
 }
@@ -1322,30 +1423,6 @@ func messagesInConversation(conversation: Conversation) -> Results<Message> {
     }
 }
 
-/*
-func messagesOfConversationByMe(conversation: Conversation, inRealm realm: Realm) -> Results<Message> {
-    let predicate = NSPredicate(format: "conversation = %@ AND fromFriend.friendState = %d", argumentArray: [conversation, UserFriendState.Me.rawValue])
-    let messages = realm.objects(Message).filter(predicate).sorted("createdUnixTime", ascending: true)
-    return messages
-}
-*/
-
-/*
-func messagesUnreadSentByMe(inRealm realm: Realm) -> Results<Message> {
-    let predicate = NSPredicate(format: "fromFriend.friendState = %d AND readed = false AND sendState = %d", argumentArray: [ UserFriendState.Me.rawValue, MessageSendState.Successed.rawValue])
-    let messages = realm.objects(Message).filter(predicate).sorted("createdUnixTime", ascending: true)
-    return messages
-}
-*/
-
-/*
-func unReadMessagesOfConversation(conversation: Conversation, inRealm realm: Realm) -> Results<Message> {
-    let predicate = NSPredicate(format: "conversation = %@ AND readed = false", argumentArray: [conversation])
-    let messages = realm.objects(Message).filter(predicate).sorted("createdUnixTime", ascending: true)
-    return messages
-}
-*/
-
 func messagesOfConversation(conversation: Conversation, inRealm realm: Realm) -> Results<Message> {
     let predicate = NSPredicate(format: "conversation = %@ AND hidden = false", argumentArray: [conversation])
     let messages = realm.objects(Message).filter(predicate).sorted("createdUnixTime", ascending: true)
@@ -1357,7 +1434,6 @@ func handleMessageDeletedFromServer(messageID messageID: String) {
     guard let
         realm = try? Realm(),
         message = messageWithMessageID(messageID, inRealm: realm)
-        //conversation = message.conversation
     else {
         return
     }
@@ -1367,30 +1443,6 @@ func handleMessageDeletedFromServer(messageID messageID: String) {
     }
 
     let messageIDs: [String] = [message.messageID]
-
-    /*
-    let messages = messagesOfConversation(conversation, inRealm: realm)
-
-    var sectionDateMessage: Message?
-    if let currentMessageIndex = messages.indexOf(message) {
-        let previousMessageIndex = currentMessageIndex - 1
-        if let previousMessage = messages[safe: previousMessageIndex] {
-            if previousMessage.mediaType == MessageMediaType.SectionDate.rawValue {
-                sectionDateMessage = previousMessage
-            }
-        }
-    }
-
-    let _ = try? realm.write {
-
-        if let sectionDateMessage = sectionDateMessage {
-            realm.delete(sectionDateMessage)
-        }
-
-        message.deleteAttachmentInRealm(realm)
-        realm.delete(message)
-    }
-    */
 
     dispatch_async(dispatch_get_main_queue()) {
         NSNotificationCenter.defaultCenter().postNotificationName(YepConfig.Notification.deletedMessages, object: ["messageIDs": messageIDs])
@@ -1437,6 +1489,7 @@ func tryCreateSectionDateMessageInConversation(conversation: Conversation, befor
 }
 
 func nameOfConversation(conversation: Conversation) -> String? {
+
     if conversation.type == ConversationType.OneToOne.rawValue {
         if let withFriend = conversation.withFriend {
             return withFriend.nickname
@@ -1452,6 +1505,7 @@ func nameOfConversation(conversation: Conversation) -> String? {
 }
 
 func lastChatDateOfConversation(conversation: Conversation) -> NSDate? {
+
     let messages = messagesInConversation(conversation)
 
     if let lastMessage = messages.last {
@@ -1462,6 +1516,7 @@ func lastChatDateOfConversation(conversation: Conversation) -> NSDate? {
 }
 
 func lastSignDateOfConversation(conversation: Conversation) -> NSDate? {
+
     let messages = messagesInConversationFromFriend(conversation)
 
     if let

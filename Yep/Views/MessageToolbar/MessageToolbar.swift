@@ -87,6 +87,7 @@ class MessageToolbar: UIToolbar {
 
                 messageTextView.hidden = false
                 voiceRecordButton.hidden = true
+
                 micButton.setImage(UIImage(named: "item_mic"), forState: .Normal)
                 moreButton.setImage(UIImage(named: "item_more"), forState: .Normal)
 
@@ -98,13 +99,12 @@ class MessageToolbar: UIToolbar {
             case .BeginTextInput:
                 moreButton.hidden = false
                 sendButton.hidden = true
-                //sendButton.setTitleColor(UIColor.messageToolBarHighlightColor(), forState: .Normal)
+
                 moreButton.setImage(UIImage(named: "item_more"), forState: .Normal)
 
             case .TextInputing:
                 moreButton.hidden = true
                 sendButton.hidden = false
-                //sendButton.setTitleColor(UIColor.yepTintColor(), forState: .Normal)
 
                 messageTextView.hidden = false
                 voiceRecordButton.hidden = true
@@ -144,6 +144,7 @@ class MessageToolbar: UIToolbar {
     var notifyTypingAction: (() -> Void)?
 
     var needDetectMention = false
+    var initMentionUserAction: (() -> Void)?
     var tryMentionUserAction: ((usernamePrefix: String) -> Void)?
     var giveUpMentionUserAction: (() -> Void)?
 
@@ -152,9 +153,7 @@ class MessageToolbar: UIToolbar {
     var moreMessageTypesAction: (() -> Void)?
 
     var voiceRecordBeginAction: ((messageToolBar: MessageToolbar) -> Void)?
-    
     var voiceRecordEndAction: ((messageToolBar: MessageToolbar) -> Void)?
-    
     var voiceRecordCancelAction: ((messageToolBar: MessageToolbar) -> Void)?
 
     var voiceRecordingUpdateUIAction: ((topOffset: CGFloat) -> Void)?
@@ -166,7 +165,7 @@ class MessageToolbar: UIToolbar {
         button.tintAdjustmentMode = .Normal
         button.addTarget(self, action: "toggleRecordVoice", forControlEvents: UIControlEvents.TouchUpInside)
         return button
-        }()
+    }()
 
     let normalCornerRadius: CGFloat = 6
 
@@ -180,7 +179,7 @@ class MessageToolbar: UIToolbar {
         textView.delegate = self
         textView.scrollEnabled = false // 重要：若没有它，换行时可能有 top inset 不正确
         return textView
-        }()
+    }()
 
     lazy var voiceRecordButton: VoiceRecordButton = {
         let button = VoiceRecordButton()
@@ -214,7 +213,7 @@ class MessageToolbar: UIToolbar {
         }
 
         return button
-        }()
+    }()
 
     lazy var moreButton: UIButton = {
         let button = UIButton()
@@ -223,7 +222,7 @@ class MessageToolbar: UIToolbar {
         button.tintAdjustmentMode = .Normal
         button.addTarget(self, action: "moreMessageTypes", forControlEvents: UIControlEvents.TouchUpInside)
         return button
-        }()
+    }()
 
     lazy var sendButton: UIButton = {
         let button = UIButton()
@@ -233,8 +232,7 @@ class MessageToolbar: UIToolbar {
         button.setTitleColor(UIColor.messageToolBarHighlightColor(), forState: .Normal)
         button.addTarget(self, action: "trySendTextMessage", forControlEvents: UIControlEvents.TouchUpInside)
         return button
-        }()
-
+    }()
 
     // MARK: UI
     
@@ -281,6 +279,7 @@ class MessageToolbar: UIToolbar {
         let textContainerInset = messageTextView.textContainerInset
         let constant = ceil(messageTextView.font!.lineHeight + textContainerInset.top + textContainerInset.bottom)
         messageTextViewHeightConstraint = NSLayoutConstraint(item: messageTextView, attribute: .Height, relatedBy: .Equal, toItem: nil, attribute: .NotAnAttribute, multiplier: 1, constant: constant)
+        messageTextViewHeightConstraint.priority = UILayoutPriorityDefaultHigh
 
         let constraintsH = NSLayoutConstraint.constraintsWithVisualFormat("H:|[micButton(48)][messageTextView][moreButton(==micButton)]|", options: NSLayoutFormatOptions(rawValue: 0), metrics: nil, views: viewsDictionary)
 
@@ -290,7 +289,6 @@ class MessageToolbar: UIToolbar {
         NSLayoutConstraint.activateConstraints(constraintsH)
         NSLayoutConstraint.activateConstraints(messageTextViewConstraintsV)
         NSLayoutConstraint.activateConstraints([messageTextViewHeightConstraint])
-
 
         let sendButtonConstraintCenterY = NSLayoutConstraint(item: sendButton, attribute: NSLayoutAttribute.CenterY, relatedBy: NSLayoutRelation.Equal, toItem: micButton, attribute: NSLayoutAttribute.CenterY, multiplier: 1, constant: 0)
 
@@ -363,10 +361,19 @@ class MessageToolbar: UIToolbar {
         //println("oldHeight: \(messageTextViewHeightConstraint.constant), newHeight: \(newHeight)")
 
         if newHeight != messageTextViewHeightConstraint.constant {
-            UIView.animateWithDuration(0.1, delay: 0.0, options: UIViewAnimationOptions.CurveEaseInOut, animations: { () -> Void in
+            UIView.animateWithDuration(0.1, delay: 0.0, options: .CurveEaseInOut, animations: {
                 self.messageTextViewHeightConstraint.constant = newHeight
                 self.layoutIfNeeded()
-            }, completion: { (finished) -> Void in
+
+            }, completion: { [weak self] finished in
+
+                // hack for scrollEnabled when input lots of text
+
+                if finished, let strongSelf = self {
+                    //println("messageToolbar.frame: \(strongSelf.frame)")
+                    let enabled = strongSelf.frame.origin.y < 100
+                    strongSelf.messageTextView.scrollEnabled = enabled
+                }
             })
         }
     }
@@ -375,27 +382,27 @@ class MessageToolbar: UIToolbar {
 
     func updateDraft(notification: NSNotification) {
 
-        if let conversation = conversation, realm = conversation.realm {
+        guard let conversation = conversation where !conversation.invalidated, let realm = conversation.realm else {
+            return
+        }
 
-            if let draft = conversation.draft {
+        if let draft = conversation.draft {
 
-                let _ = try? realm.write { [weak self] in
-                    if let strongSelf = self {
-                        draft.messageToolbarState = strongSelf.state.rawValue
+            let _ = try? realm.write { [weak self] in
+                if let strongSelf = self {
+                    draft.messageToolbarState = strongSelf.state.rawValue
 
-                        if strongSelf.state == .BeginTextInput || strongSelf.state == .TextInputing {
-                            draft.text = strongSelf.messageTextView.text
-                        }
-                    }
+                    //println("strongSelf.messageTextView.text: \(strongSelf.messageTextView.text)")
+                    draft.text = strongSelf.messageTextView.text
                 }
+            }
 
-            } else {
-                let draft = Draft()
-                draft.messageToolbarState = state.rawValue
-                
-                let _ = try? realm.write {
-                    conversation.draft = draft
-                }
+        } else {
+            let draft = Draft()
+            draft.messageToolbarState = state.rawValue
+            
+            let _ = try? realm.write {
+                conversation.draft = draft
             }
         }
     }
@@ -481,31 +488,39 @@ extension MessageToolbar: UITextViewDelegate {
 
     func textViewDidBeginEditing(textView: UITextView) {
 
-        if let text = textView.text {
-            state = text.isEmpty ? .BeginTextInput : .TextInputing
-        }
+        guard let text = textView.text else { return }
+
+        state = text.isEmpty ? .BeginTextInput : .TextInputing
     }
 
     func textViewDidChange(textView: UITextView) {
 
-        if let text = textView.text {
-            state = text.isEmpty ? .BeginTextInput : .TextInputing
+        guard let text = textView.text else { return }
 
-            if needDetectMention {
+        state = text.isEmpty ? .BeginTextInput : .TextInputing
 
-                let currentLetterIndex = textView.selectedRange.location - 1
+        if needDetectMention {
 
-                if let (wordString, mentionWordRange) = text.yep_mentionWordInIndex(currentLetterIndex) {
-                    //println("mentionWord: \(wordString), \(mentionWordRange)")
-
-                    mentionUsernameRange = mentionWordRange
-                    tryMentionUserAction?(usernamePrefix: wordString)
-
-                    return
-                }
-
-                giveUpMentionUserAction?()
+            if text.hasSuffix("@") {
+                mentionUsernameRange = Range<String.Index>(start: text.endIndex.advancedBy(-1), end: text.endIndex)
+                initMentionUserAction?()
+                return
             }
+
+            let currentLetterIndex = textView.selectedRange.location - 1
+
+            if let (wordString, mentionWordRange) = text.yep_mentionWordInIndex(currentLetterIndex) {
+                //println("mentionWord: \(wordString), \(mentionWordRange)")
+
+                mentionUsernameRange = mentionWordRange
+
+                let wordString = wordString.trimming(.Whitespace)
+                tryMentionUserAction?(usernamePrefix: wordString)
+
+                return
+            }
+
+            giveUpMentionUserAction?()
         }
     }
 }

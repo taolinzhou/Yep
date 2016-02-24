@@ -40,6 +40,10 @@ class SocialWorkInstagramViewController: BaseViewController {
             }
         }
     }
+    
+    override func viewWillAppear(animated: Bool) {
+        super.viewWillAppear(animated)
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -88,7 +92,7 @@ class SocialWorkInstagramViewController: BaseViewController {
             if let userID = userID {
 
                 instagramWorkOfUserWithUserID(userID, failureHandler: { [weak self] (reason, errorMessage) -> Void in
-                    defaultFailureHandler(reason, errorMessage: errorMessage)
+                    defaultFailureHandler(reason: reason, errorMessage: errorMessage)
 
                     YepAlert.alertSorry(message: NSLocalizedString("Network is not good!", comment: ""), inViewController: self)
 
